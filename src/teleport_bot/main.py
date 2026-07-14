@@ -17,7 +17,7 @@ async def main() -> None:
     bot = create_bot(settings)
     dp = create_dispatcher(settings, session_factory)
 
-    runner = web.AppRunner(create_health_app())
+    runner = web.AppRunner(create_health_app(settings, session_factory))
     await runner.setup()
     site = web.TCPSite(runner, settings.health_host, settings.health_port)
     await site.start()

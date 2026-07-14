@@ -13,6 +13,18 @@ class AccessService:
         self.session = session
         self.telegram = telegram
 
+    async def send_paid_invite(
+        self,
+        target_telegram_id: int,
+        private_chat_id: int | str,
+    ) -> InviteLinkResult:
+        user = await UserRepository(self.session).get_by_telegram_id(target_telegram_id)
+        if user is None:
+            raise ValueError("user_not_found")
+        if not SubscriptionRepository.is_active(user.subscription):
+            raise PermissionError("subscription_inactive")
+        return await self.telegram.send_single_use_invite(private_chat_id, target_telegram_id)
+
     async def send_manual_invite(
         self,
         admin_id: int,

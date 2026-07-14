@@ -53,3 +53,26 @@ def edit_questions(total: int) -> InlineKeyboardMarkup:
             for i in range(1, total + 1)
         ]
     )
+
+
+def payment_keyboard(confirmation_url: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="💳 ОПЛАТИТЬ", url=confirmation_url)],
+            [InlineKeyboardButton(text="🔄 ПРОВЕРИТЬ ОПЛАТУ", callback_data="payment:check")],
+            [InlineKeyboardButton(text="⬅️ НАЗАД", callback_data="onboarding:final")],
+        ]
+    )
+
+
+def active_subscription_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Получить ссылку в чат", callback_data="payment:get_invite"
+                )
+            ],
+            [InlineKeyboardButton(text="Продлить подписку", callback_data="payment:renew")],
+        ]
+    )

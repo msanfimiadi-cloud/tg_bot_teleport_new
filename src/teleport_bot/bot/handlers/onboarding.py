@@ -5,11 +5,13 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from teleport_bot.bot.keyboards.onboarding import (
+    active_subscription_keyboard,
     back_keyboard,
     confirm_questionnaire,
     confirm_restart,
     edit_questions,
     one_button,
+    payment_keyboard,
     start_choice,
 )
 from teleport_bot.bot.states import OnboardingStates
@@ -17,8 +19,10 @@ from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import User
 from teleport_bot.models.enums import EventType, FunnelStatus, OnboardingStatus, QuestionnaireStatus
 from teleport_bot.repositories.events import EventRepository
+from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.admin_notifications import AdminNotifier
+from teleport_bot.services.payments import PaymentError, PaymentService
 from teleport_bot.services.questionnaire import (
     QUESTIONS,
     ValidationError,
@@ -29,6 +33,7 @@ from teleport_bot.services.questionnaire import (
     set_answer,
     validate_answer,
 )
+from teleport_bot.services.yookassa import YooKassaGateway
 from teleport_bot.texts import content
 
 router = Router()
@@ -227,13 +232,13 @@ async def circle(callback: CallbackQuery, settings: Settings) -> None:
 @router.callback_query(F.data == "onboarding:final")
 async def final_info(callback: CallbackQuery) -> None:
     await callback.message.answer(
-        content.FINAL_INFO, reply_markup=one_button("ГОТОВ НАЧАТЬ", "payment:stub")
+        content.FINAL_INFO, reply_markup=one_button("ГОТОВ НАЧАТЬ", "payment:start")
     )  # type: ignore[union-attr]
     await callback.answer()
 
 
-@router.callback_query(F.data == "payment:stub")
-async def payment_stub(
+@router.callback_query(F.data.in_({"payment:start", "payment:renew"}))
+async def payment_start(
     callback: CallbackQuery, session: AsyncSession, bot: Bot, settings: Settings
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
@@ -243,5 +248,59 @@ async def payment_stub(
         events = EventRepository(session)
         await events.add(EventType.PAYMENT_STAGE_REACHED, user)
         await AdminNotifier(bot, settings.admin_telegram_ids, events).payment_stage_reached(user)
-        await callback.message.answer(content.PAYMENT_STUB)
+        if callback.data == "payment:start" and SubscriptionRepository.is_active(user.subscription):
+            await callback.message.answer(
+                f"Подписка активна до: {user.subscription.expires_at:%d.%m.%Y}",
+                reply_markup=active_subscription_keyboard(),
+            )
+        else:
+            try:
+                payment = await PaymentService(
+                    session, settings, YooKassaGateway(settings)
+                ).create_or_reuse_payment(callback.from_user.id)
+            except PaymentError as exc:
+                await callback.message.answer(f"Не удалось создать оплату: {exc}")
+            else:
+                await callback.message.answer(
+                    "Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
+                    f"Стоимость: {payment.amount} {payment.currency}\n"
+                    f"Срок: {settings.subscription_duration_days} дней\n"
+                    f"{settings.subscription_description}",
+                    reply_markup=payment_keyboard(
+                        payment.confirmation_url or settings.yookassa_return_url
+                    ),
+                )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "payment:check")
+async def payment_check(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    if callback.message:
+        try:
+            payment = await PaymentService(
+                session, settings, YooKassaGateway(settings)
+            ).check_latest_payment(callback.from_user.id)
+        except Exception as exc:
+            await callback.message.answer(
+                f"Оплата пока не подтверждена или недоступна проверка: {exc.__class__.__name__}"
+            )
+        else:
+            if payment is None:
+                await callback.message.answer("Актуальный платёж не найден. Создай новую оплату.")
+            elif payment.status == "succeeded":
+                await callback.message.answer(
+                    "Оплата подтверждена. Подписка активирована, доступ будет выдан автоматически."
+                )
+            elif payment.status == "canceled":
+                await callback.message.answer("Платёж отменён. Можно создать новую оплату.")
+            else:
+                await callback.message.answer("Оплата пока не подтверждена.")
+    await callback.answer()
+
+
+@router.callback_query(F.data == "payment:get_invite")
+async def payment_get_invite(callback: CallbackQuery) -> None:
+    await callback.message.answer(
+        "Запрос ссылки доступен через администраторскую выдачу или после подтверждения оплаты."
+    )  # type: ignore[union-attr]
     await callback.answer()
