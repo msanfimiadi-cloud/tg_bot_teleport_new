@@ -13,6 +13,7 @@ from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import Questionnaire, User
 from teleport_bot.models.enums import AdminAction
 from teleport_bot.repositories.admin import AdminLogRepository, AdminRepository
+from teleport_bot.repositories.settings import SettingsRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.access import AccessService
@@ -133,17 +134,42 @@ async def stats(callback: CallbackQuery, session: AsyncSession, settings: Settin
 async def settings_view(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
     if not await guard_callback(callback, session, settings):
         return
+    effective = await SettingsRepository(session).effective(settings)
     await callback.message.answer(  # type: ignore[union-attr]
         "Настройки:\n"
         f"Количество администраторов: {len(settings.admin_telegram_ids)}\n"
         f"ID закрытого Telegram-чата: {settings.private_chat_id or 'не настроено'}\n"
-        f"Расписание круга: {settings.circle_schedule}\n"
-        f"Длительность подписки: {settings.subscription_duration_days} дней\n"
-        f"Ссылка на поддержку: {settings.support_url or 'не настроено'}\n"
-        f"Стоимость подписки: {settings.subscription_price or 'не настроено'}",
+        f"Расписание круга: {effective['circle_schedule']}\n"
+        f"Длительность подписки: {effective['subscription_duration_days']} дней\n"
+        f"Ссылка на поддержку: {effective['support_url'] or 'не настроено'}\n"
+        f"Стоимость подписки: {effective['subscription_price'] or 'не настроено'}\n\n"
+        "Для изменения отправьте: /set_setting ключ значение",
         reply_markup=back_to_admin_menu(),
     )
     await callback.answer()
+
+
+@router.message(Command("set_setting"))
+async def set_setting_command(message: Message, session: AsyncSession, settings: Settings) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) != 3:
+        await message.answer(
+            "Формат: /set_setting subscription_price|subscription_duration_days|"
+            "circle_schedule|support_url значение"
+        )
+        return
+    try:
+        await SettingsRepository(session).set(parts[1], parts[2], message.from_user.id)
+    except ValueError:
+        await message.answer("Эту настройку нельзя изменить.")
+        return
+    await AdminLogRepository(session).add(
+        message.from_user.id, AdminAction.SETTINGS_CHANGED, payload={"key": parts[1]}
+    )
+    await message.answer("Настройка изменена.", reply_markup=back_to_admin_menu())
 
 
 @router.callback_query(F.data == "admin:activate_subscription")
@@ -238,13 +264,206 @@ async def send_link(
         await state.clear()
 
 
+def render_subscription(sub) -> str:
+    user = sub.user
+    days = "—" if not sub.expires_at else (sub.expires_at.date() - datetime.now(UTC).date()).days
+    return (
+        f"Telegram ID: {user.telegram_id}\nusername: @{user.username if user.username else '—'}\n"
+        f"имя: {user.first_name} {user.last_name or ''}\nстатус: {sub.status}\n"
+        f"дата начала: {sub.started_at or '—'}\nдата окончания: {sub.expires_at or '—'}\n"
+        f"дней осталось: {days}"
+    )
+
+
 @router.callback_query(F.data == "admin:subscriptions")
-async def subscriptions_stub(
+async def subscriptions_view(
     callback: CallbackQuery, session: AsyncSession, settings: Settings
 ) -> None:
     if not await guard_callback(callback, session, settings):
         return
-    await callback.message.answer(
-        "Раздел подписок готов. YooKassa будет добавлена позже.", reply_markup=back_to_admin_menu()
-    )  # type: ignore[union-attr]
+    rows = await AdminRepository(session).subscriptions("active")
+    text = "\n\n".join(render_subscription(s) for s in rows) or "Подписки не найдены."
+    await callback.message.answer(text, reply_markup=back_to_admin_menu())  # type: ignore[union-attr]
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin:import_subscription")
+async def import_start(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.set_state(AdminStates.import_user_id)
+    await callback.message.answer("Введите Telegram ID пользователя.")  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.message(AdminStates.import_user_id)
+async def import_user_id(
+    message: Message, state: FSMContext, settings: Settings, session: AsyncSession
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    await state.update_data(target_user_id=int(message.text or "0"))
+    await state.set_state(AdminStates.import_expires_at)
+    await message.answer("Введите дату окончания подписки в формате YYYY-MM-DD.")
+
+
+@router.message(AdminStates.import_expires_at)
+async def import_expires(
+    message: Message, state: FSMContext, settings: Settings, session: AsyncSession
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    await state.update_data(expires_at=message.text or "")
+    await state.set_state(AdminStates.import_comment)
+    await message.answer("Введите комментарий или '-' если он не нужен.")
+
+
+@router.message(AdminStates.import_comment)
+async def import_save(
+    message: Message, state: FSMContext, settings: Settings, session: AsyncSession
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    from teleport_bot.services.subscriptions import ManualSubscriptionService
+
+    data = await state.get_data()
+    expires_at = datetime.fromisoformat(data["expires_at"]).replace(tzinfo=UTC)
+    comment = None if message.text == "-" else message.text
+    await ManualSubscriptionService(session).import_subscription(
+        int(data["target_user_id"]), expires_at, message.from_user.id, comment
+    )
+    await AdminLogRepository(session).add(
+        message.from_user.id,
+        AdminAction.SUBSCRIPTION_MIGRATED,
+        int(data["target_user_id"]),
+        {"expires_at": expires_at.isoformat(), "comment": comment},
+    )
+    await state.clear()
+    await message.answer("Подписка импортирована.", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "admin:extend_subscription")
+async def extend_start(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.set_state(AdminStates.extend_user_id)
+    await callback.message.answer("Введите Telegram ID пользователя.")  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.message(AdminStates.extend_user_id)
+async def extend_user_id(
+    message: Message, state: FSMContext, settings: Settings, session: AsyncSession
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    await state.update_data(target_user_id=int(message.text or "0"))
+    await state.set_state(AdminStates.extend_days)
+    await message.answer("Введите количество дней.")
+
+
+@router.message(AdminStates.extend_days)
+async def extend_save(
+    message: Message, state: FSMContext, settings: Settings, session: AsyncSession
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    from teleport_bot.services.subscriptions import ManualSubscriptionService
+
+    data = await state.get_data()
+    sub = await ManualSubscriptionService(session).extend_manual(
+        int(data["target_user_id"]), int(message.text or "0"), message.from_user.id
+    )
+    await AdminLogRepository(session).add(
+        message.from_user.id,
+        AdminAction.SUBSCRIPTION_EXTENDED_MANUAL,
+        int(data["target_user_id"]),
+        {
+            "days": int(message.text or "0"),
+            "expires_at": sub.expires_at.isoformat() if sub.expires_at else None,
+        },
+    )
+    await state.clear()
+    await message.answer("Подписка продлена.", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "admin:cancel_subscription")
+async def cancel_start(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.set_state(AdminStates.cancel_user_id)
+    await callback.message.answer("Введите Telegram ID пользователя.")  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.message(AdminStates.cancel_user_id)
+async def cancel_save(
+    message: Message, state: FSMContext, settings: Settings, session: AsyncSession
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    from teleport_bot.services.subscriptions import ManualSubscriptionService
+
+    target_id = int(message.text or "0")
+    await ManualSubscriptionService(session).cancel(target_id, message.from_user.id)
+    await AdminLogRepository(session).add(
+        message.from_user.id, AdminAction.SUBSCRIPTION_CANCELLED, target_id
+    )
+    await state.clear()
+    await message.answer("Подписка отменена.", reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "admin:user_history")
+async def history_start(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.set_state(AdminStates.history_user_id)
+    await callback.message.answer("Введите Telegram ID пользователя.")  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.message(AdminStates.history_user_id)
+async def history_show(
+    message: Message, state: FSMContext, settings: Settings, session: AsyncSession
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    target_id = int(message.text or "0")
+    history = await AdminRepository(session).user_history(target_id)
+    if history is None:
+        await message.answer("Пользователь не найден.")
+        await state.clear()
+        return
+    user = history["user"]
+    questionnaire = history["questionnaire"]
+    subscription = history["subscription"]
+    payments = history["payments"]
+    events = history["events"]
+    admin_logs = history["admin_logs"]
+    text = (
+        f"История пользователя {target_id}\n"
+        f"Анкета: {getattr(questionnaire, 'status', '—')}\n"
+        f"Подписка: {getattr(subscription, 'status', '—')} до "
+        f"{getattr(subscription, 'expires_at', '—')}\n"
+        f"Платежи: {len(payments)}\n"
+        f"События: {len(events)}\n"
+        f"Административные действия: {len(admin_logs)}\n"
+        f"Telegram username: @{user.username if user.username else '—'}"
+    )
+    await state.clear()
+    await message.answer(text, reply_markup=back_to_admin_menu())

@@ -152,6 +152,30 @@ class PaymentMethod(TimestampMixin, Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class SubscriptionReminder(Base):
+    __tablename__ = "subscription_reminders"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "reminder_type", name="uq_subscription_reminder_type"),
+        Index("ix_subscription_reminders_subscription_id", "subscription_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("subscriptions.id", ondelete="CASCADE"))
+    reminder_type: Mapped[str] = mapped_column(String(32))
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+    updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class AdminActionLog(Base):
     __tablename__ = "admin_action_logs"
 

@@ -41,6 +41,12 @@ class EventType(StrEnum):
     INVITE_LINK_CREATED = "invite_link_created"
     ACCESS_ALREADY_PRESENT = "access_already_present"
     ACCESS_DELIVERY_FAILED = "access_delivery_failed"
+    SUBSCRIPTION_EXPIRED = "subscription_expired"
+    SUBSCRIPTION_REMINDER_SENT = "subscription_reminder_sent"
+    SUBSCRIPTION_MIGRATED = "subscription_migrated"
+    SUBSCRIPTION_CANCELLED = "subscription_cancelled"
+    SUBSCRIPTION_EXTENDED_MANUAL = "subscription_extended_manual"
+    SETTINGS_CHANGED = "settings_changed"
 
 
 class SubscriptionStatus(StrEnum):
@@ -64,6 +70,10 @@ class AdminAction(StrEnum):
     MANUAL_LINK_SENT = "manual_link_sent"
     TELEGRAM_API_ERROR = "telegram_api_error"
     ACCESS_DENIED = "access_denied"
+    SUBSCRIPTION_MIGRATED = "subscription_migrated"
+    SUBSCRIPTION_CANCELLED = "subscription_cancelled"
+    SUBSCRIPTION_EXTENDED_MANUAL = "subscription_extended_manual"
+    SETTINGS_CHANGED = "settings_changed"
 
 
 class PaymentStatus(StrEnum):

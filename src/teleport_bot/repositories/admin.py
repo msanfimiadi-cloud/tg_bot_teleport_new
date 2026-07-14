@@ -108,3 +108,82 @@ class AdminRepository:
             "active_subscriptions": active or 0,
             "inactive_subscriptions": inactive or 0,
         }
+
+    async def subscriptions(self, filter_name: str = "active") -> list[Subscription]:
+        now = datetime.now(UTC)
+        stmt = (
+            select(Subscription)
+            .options(selectinload(Subscription.user))
+            .order_by(Subscription.expires_at.asc())
+        )
+        if filter_name == "expired":
+            stmt = stmt.where(Subscription.status == SubscriptionStatus.EXPIRED.value)
+        elif filter_name == "ending_7_days":
+            stmt = stmt.where(
+                Subscription.status.in_(
+                    [SubscriptionStatus.ACTIVE.value, SubscriptionStatus.MANUAL.value]
+                ),
+                Subscription.expires_at <= now + timedelta(days=7),
+                Subscription.expires_at >= now,
+            )
+        elif filter_name == "manual":
+            stmt = stmt.where(Subscription.activation_source == "manual")
+        elif filter_name == "migrated":
+            stmt = stmt.where(Subscription.activation_source == "migration")
+        else:
+            stmt = stmt.where(
+                Subscription.status.in_(
+                    [SubscriptionStatus.ACTIVE.value, SubscriptionStatus.MANUAL.value]
+                )
+            )
+        return list((await self.session.scalars(stmt.limit(20))).all())
+
+    async def user_history(self, telegram_id: int) -> dict[str, object] | None:
+        from teleport_bot.models.db import EventLog, Payment
+
+        user = await self.session.scalar(
+            select(User)
+            .where(User.telegram_id == telegram_id)
+            .options(
+                selectinload(User.questionnaire),
+                selectinload(User.subscription),
+                selectinload(User.payments),
+            )
+        )
+        if user is None:
+            return None
+        events = list(
+            (
+                await self.session.scalars(
+                    select(EventLog)
+                    .where(EventLog.user_id == user.id)
+                    .order_by(EventLog.created_at.asc())
+                )
+            ).all()
+        )
+        admin_logs = list(
+            (
+                await self.session.scalars(
+                    select(AdminActionLog)
+                    .where(AdminActionLog.target_user_id == telegram_id)
+                    .order_by(AdminActionLog.created_at.asc())
+                )
+            ).all()
+        )
+        payments = list(
+            (
+                await self.session.scalars(
+                    select(Payment)
+                    .where(Payment.user_id == user.id)
+                    .order_by(Payment.created_at.asc())
+                )
+            ).all()
+        )
+        return {
+            "user": user,
+            "questionnaire": user.questionnaire,
+            "subscription": user.subscription,
+            "payments": payments,
+            "events": events,
+            "admin_logs": admin_logs,
+        }

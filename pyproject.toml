@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.4,<3",
     "structlog>=24.1,<26",
     "aiohttp>=3.9,<4",
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]
