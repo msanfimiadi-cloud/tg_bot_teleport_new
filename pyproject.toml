@@ -1,0 +1,42 @@
+[project]
+name = "tg-bot-teleport"
+version = "0.1.0"
+description = "Production-ready Telegram bot for Teleport onboarding"
+requires-python = ">=3.12"
+dependencies = [
+    "aiogram>=3.10,<4",
+    "sqlalchemy[asyncio]>=2.0,<3",
+    "asyncpg>=0.29,<1",
+    "alembic>=1.13,<2",
+    "pydantic-settings>=2.4,<3",
+    "structlog>=24.1,<26",
+    "aiohttp>=3.9,<4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2,<9",
+    "pytest-asyncio>=0.23,<1",
+    "ruff>=0.5,<1",
+    "mypy>=1.10,<2",
+    "aiosqlite>=0.20,<1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "RUF"]
+ignore = ["B008", "RUF001"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+exclude = ["alembic/versions"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
