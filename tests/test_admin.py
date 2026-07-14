@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -26,7 +27,7 @@ class TgUser:
 
 
 @pytest.fixture
-async def session_factory():
+async def session_factory() -> Any:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -44,7 +45,7 @@ def test_regular_user_access_denied_by_telegram_id() -> None:
     assert is_admin(settings, 30) is False
 
 
-async def test_create_subscription(session_factory) -> None:
+async def test_create_subscription(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         user, _ = await UserRepository(session).upsert_from_telegram(TgUser(1, "one", "One"))
         expires = datetime.now(UTC) + timedelta(days=30)
@@ -55,7 +56,7 @@ async def test_create_subscription(session_factory) -> None:
         assert subscription.activation_source == "manual"
 
 
-async def test_update_subscription(session_factory) -> None:
+async def test_update_subscription(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         user, _ = await UserRepository(session).upsert_from_telegram(TgUser(2, "two", "Two"))
         repo = SubscriptionRepository(session)
@@ -67,7 +68,7 @@ async def test_update_subscription(session_factory) -> None:
         assert updated.expires_at == updated_expires
 
 
-async def test_manual_activation_is_logged(session_factory) -> None:
+async def test_manual_activation_is_logged(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         await AdminLogRepository(session).add(
             10, AdminAction.MANUAL_SUBSCRIPTION_ACTIVATED, 1, {"expires_at": "2026-08-01"}
@@ -76,14 +77,14 @@ async def test_manual_activation_is_logged(session_factory) -> None:
         assert row.action == AdminAction.MANUAL_SUBSCRIPTION_ACTIVATED.value
 
 
-async def test_manual_link_success_is_logged(session_factory) -> None:
+async def test_manual_link_success_is_logged(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         await AdminLogRepository(session).add(10, AdminAction.MANUAL_LINK_SENT, 1)
         row = (await session.scalars(select(AdminActionLog))).one()
         assert row.action == AdminAction.MANUAL_LINK_SENT.value
 
 
-async def test_telegram_api_error_is_logged(session_factory) -> None:
+async def test_telegram_api_error_is_logged(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         await AdminLogRepository(session).add(
             10, AdminAction.TELEGRAM_API_ERROR, 1, {"error": "boom"}
@@ -92,7 +93,7 @@ async def test_telegram_api_error_is_logged(session_factory) -> None:
         assert row.payload["error"] == "boom"
 
 
-async def test_user_search(session_factory) -> None:
+async def test_user_search(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         await UserRepository(session).upsert_from_telegram(TgUser(100, "needle", "Alice"))
         await UserRepository(session).upsert_from_telegram(TgUser(200, "other", "Bob"))
@@ -104,7 +105,7 @@ async def test_user_search(session_factory) -> None:
         assert [u.telegram_id for u in by_name] == [100]
 
 
-async def test_stats(session_factory) -> None:
+async def test_stats(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         user, _ = await UserRepository(session).upsert_from_telegram(TgUser(300, "stats", "Stat"))
         user.questionnaire.name_and_age = "Stat 30"

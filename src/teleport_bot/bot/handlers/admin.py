@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from teleport_bot.bot.keyboards.admin import admin_menu, back_to_admin_menu
 from teleport_bot.bot.states import AdminStates
 from teleport_bot.config.settings import Settings
-from teleport_bot.models.db import Questionnaire, User
+from teleport_bot.models.db import Questionnaire, Subscription, User
 from teleport_bot.models.enums import AdminAction
 from teleport_bot.repositories.admin import AdminLogRepository, AdminRepository
 from teleport_bot.repositories.settings import SettingsRepository
@@ -264,7 +264,7 @@ async def send_link(
         await state.clear()
 
 
-def render_subscription(sub) -> str:
+def render_subscription(sub: Subscription) -> str:
     user = sub.user
     days = "—" if not sub.expires_at else (sub.expires_at.date() - datetime.now(UTC).date()).days
     return (

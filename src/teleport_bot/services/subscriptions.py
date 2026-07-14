@@ -1,6 +1,6 @@
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,7 +23,7 @@ def renew_keyboard() -> InlineKeyboardMarkup:
 
 
 class SubscriptionLifecycleService:
-    def __init__(self, session: AsyncSession, bot: Bot) -> None:
+    def __init__(self, session: AsyncSession, bot: Any) -> None:
         self.session = session
         self.bot = bot
         self.events = EventRepository(session)
@@ -119,11 +119,11 @@ class ManualSubscriptionService:
         if user is None:
 
             class Tg:
-                id = telegram_id
-                username = None
-                first_name = ""
-                last_name = None
-                language_code = None
+                id: int = telegram_id
+                username: str | None = None
+                first_name: str = ""
+                last_name: str | None = None
+                language_code: str | None = None
 
             user, _ = await repo.upsert_from_telegram(Tg())
         sub = await SubscriptionRepository(self.session).activate_manual(

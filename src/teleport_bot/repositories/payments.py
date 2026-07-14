@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,24 +13,36 @@ class PaymentRepository:
         self.session = session
 
     async def latest_for_user(self, user_id: int) -> Payment | None:
-        return await self.session.scalar(
-            select(Payment).where(Payment.user_id == user_id).order_by(desc(Payment.created_at))
+        return cast(
+            Payment | None,
+            await self.session.scalar(
+                select(Payment)
+                .where(Payment.user_id == user_id)
+                .order_by(desc(Payment.created_at))
+            ),
         )
 
     async def reusable_pending(self, user_id: int, reuse_minutes: int) -> Payment | None:
         cutoff = datetime.now(UTC) - timedelta(minutes=reuse_minutes)
-        return await self.session.scalar(
-            select(Payment)
-            .where(Payment.user_id == user_id, Payment.status == PaymentStatus.PENDING.value)
-            .where(Payment.confirmation_url.is_not(None), Payment.created_at >= cutoff)
-            .order_by(desc(Payment.created_at))
+        return cast(
+            Payment | None,
+            await self.session.scalar(
+                select(Payment)
+                .where(Payment.user_id == user_id, Payment.status == PaymentStatus.PENDING.value)
+                .where(Payment.confirmation_url.is_not(None), Payment.created_at >= cutoff)
+                .order_by(desc(Payment.created_at))
+            ),
         )
 
     async def get_by_provider_id(self, provider: str, provider_payment_id: str) -> Payment | None:
-        return await self.session.scalar(
-            select(Payment).where(
-                Payment.provider == provider, Payment.provider_payment_id == provider_payment_id
-            )
+        return cast(
+            Payment | None,
+            await self.session.scalar(
+                select(Payment).where(
+                    Payment.provider == provider,
+                    Payment.provider_payment_id == provider_payment_id,
+                )
+            ),
         )
 
     async def add(self, payment: Payment) -> Payment:

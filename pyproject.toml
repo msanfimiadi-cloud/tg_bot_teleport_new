@@ -37,7 +37,11 @@ python_version = "3.12"
 strict = true
 plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
 exclude = ["alembic/versions"]
+[[tool.mypy.overrides]]
+module = ["apscheduler.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = ["src"]
 testpaths = ["tests"]

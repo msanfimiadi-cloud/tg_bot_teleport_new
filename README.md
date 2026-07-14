@@ -1,15 +1,62 @@
 # Телепорт Telegram Bot
 
-Production-ready Telegram-бот «Телепорт» на Python 3.12, aiogram 3, PostgreSQL, SQLAlchemy Async, Alembic и aiohttp.
+Production-ready Telegram-бот «Телепорт» для onboarding, анкеты, оплат YooKassa, подписок, административного управления и фоновых задач. Стек: Python 3.12, aiogram 3, aiohttp, SQLAlchemy 2 Async, PostgreSQL, Alembic, APScheduler, structlog.
 
-## Возможности
+## Архитектура
 
-- `/start`, onboarding, анкета пользователя, восстановление прогресса.
-- Административное меню `/admin`: просмотр анкет и пользователей, статистика, ручная активация подписки и ручная выдача ссылки.
-- YooKassa: создание платежа, переиспользование свежего pending-платежа, ручная проверка оплаты и webhook `/webhooks/yookassa`.
-- Автоматическая активация или продление подписки после подтверждения платежа.
-- Подготовленная модель сохранённых платёжных методов для будущих рекуррентных платежей.
-- Health endpoint: `GET /health`.
+```mermaid
+flowchart LR
+    U[Пользователь Telegram] --> TG[Telegram Bot API]
+    TG --> B[aiogram bot handlers]
+    B --> FSM[FSM состояния]
+    B --> S[Services]
+    S --> R[Repositories]
+    R --> DB[(PostgreSQL)]
+    S --> YK[YooKassa API]
+    YK --> WH[aiohttp webhook]
+    WH --> S
+    SCH[APScheduler] --> S
+    ADM[Администратор Telegram] --> B
+```
+
+Основные слои:
+
+- `bot/` — aiogram-приложение, handlers, keyboards, FSM и middleware с транзакционной сессией.
+- `services/` — бизнес-операции: анкета, платежи, подписки, доступ в закрытый чат, уведомления.
+- `repositories/` — единственный слой прямого доступа к БД.
+- `models/` — SQLAlchemy ORM-модели и enum-значения.
+- `web/` — health endpoint и webhook YooKassa.
+- `scheduler.py` — ежедневные фоновые проверки подписок.
+- `alembic/` — миграции PostgreSQL.
+
+## Структура проекта
+
+```text
+src/teleport_bot/
+  bot/              # aiogram app, handlers, FSM states, keyboards, middlewares
+  config/           # pydantic settings, logging
+  db/               # Base, timestamp mixin, async session factory
+  models/           # ORM models and enums
+  repositories/     # typed database access layer
+  services/         # questionnaire, payments, yookassa, subscriptions, access
+  texts/            # user-facing copy
+  web/              # health server and payment webhook
+alembic/            # Alembic environment and versions
+tests/              # onboarding, admin, repositories, subscriptions tests
+```
+
+## База данных
+
+Ключевые таблицы:
+
+- `users` — Telegram-профиль, статусы onboarding/funnel, даты активности.
+- `questionnaires` — ответы анкеты, текущий шаг FSM, статус и review-дата.
+- `payments` — YooKassa-платежи с idempotency key, статусами, суммой, безопасной metadata и индексами для поиска.
+- `payment_methods` — только безопасный provider method id и маскированное описание, без карточных данных.
+- `subscriptions` — единая подписка пользователя, статус, срок, источник активации и последний платёж.
+- `subscription_reminders` — защита от повторных напоминаний одного типа.
+- `app_settings` — runtime-настройки админки.
+- `admin_action_logs` и `event_logs` — аудит действий и событий без секретов.
 
 ## Настройка окружения
 
@@ -20,22 +67,60 @@ cp .env.example .env
 Обязательные переменные:
 
 - `BOT_TOKEN` — токен Telegram-бота.
-- `DATABASE_URL` — PostgreSQL DSN для SQLAlchemy asyncpg.
+- `DATABASE_URL` — async SQLAlchemy DSN, например `postgresql+asyncpg://teleport:teleport@postgres:5432/teleport`.
 - `ADMIN_IDS` — Telegram ID администраторов через запятую.
 - `PRIVATE_CHAT_ID` — ID закрытого Telegram-чата.
-- `PUBLIC_BASE_URL` или `WEBHOOK_HOST` — публичный адрес сервиса за reverse proxy.
-- `YOOKASSA_SHOP_ID` и `YOOKASSA_SECRET_KEY` — данные магазина YooKassa, секреты не коммитить.
-- `YOOKASSA_RETURN_URL` — URL возврата после оплаты.
-- `YOOKASSA_WEBHOOK_PATH` — путь webhook, по умолчанию `/webhooks/yookassa`.
-- `YOOKASSA_CURRENCY`, `SUBSCRIPTION_PRICE`, `SUBSCRIPTION_DURATION_DAYS` — валюта, цена и срок подписки.
-- `PAYMENT_PENDING_TTL_MINUTES`, `PAYMENT_REUSE_MINUTES` — устаревание и переиспользование pending-платежей.
-- `PAYMENT_SAVE_METHOD_ENABLED` — запрашивать ли сохранение метода оплаты.
+- `PUBLIC_BASE_URL` / `WEBHOOK_HOST` — публичный HTTPS-адрес сервиса.
+- `YOOKASSA_SHOP_ID`, `YOOKASSA_SECRET_KEY`, `YOOKASSA_RETURN_URL`, `YOOKASSA_WEBHOOK_PATH`.
+- `SUBSCRIPTION_PRICE`, `SUBSCRIPTION_DURATION_DAYS`, `PAYMENT_PENDING_TTL_MINUTES`, `PAYMENT_REUSE_MINUTES`.
+- `INVITE_LINK_TTL_HOURS` — срок действия ручной invite-ссылки.
 
-Цена обрабатывается как `Decimal`, не `float`.
+Секреты хранятся только в окружении и не должны попадать в логи, Git или payload событий.
+
+## Локальный запуск без Docker
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -e '.[dev]'
+cp .env.example .env
+# укажите DATABASE_URL на доступный PostgreSQL
+alembic upgrade head
+python -m teleport_bot.main
+```
+
+Проверки:
+
+```bash
+ruff check .
+mypy src tests
+pytest
+```
+
+## Docker
+
+```bash
+docker compose build
+docker compose up -d postgres
+docker compose run --rm bot alembic upgrade head
+docker compose up bot
+```
+
+В `docker-compose.yml` контейнер `bot` перед стартом выполняет `alembic upgrade head`, затем запускает `python -m teleport_bot.main`.
+
+## Миграции
+
+```bash
+alembic upgrade head
+alembic downgrade -1
+alembic upgrade head
+```
+
+Для production-проверки миграций используйте пустую PostgreSQL-базу и тот же `DATABASE_URL`, с которым будет запускаться приложение.
 
 ## YooKassa
 
-В личном кабинете YooKassa настройте webhook на публичный URL:
+Webhook настраивается в личном кабинете YooKassa:
 
 ```text
 https://<PUBLIC_BASE_URL><YOOKASSA_WEBHOOK_PATH>
@@ -47,67 +132,72 @@ https://<PUBLIC_BASE_URL><YOOKASSA_WEBHOOK_PATH>
 - `payment.canceled`
 - `payment.waiting_for_capture`
 
-Webhook не полагается только на входящий JSON: сервис повторно получает платёж через YooKassa API, сверяет ID платежа, сумму, валюту и metadata (`user_id`, `telegram_id`, `product`). При неоднозначности подписка не активируется.
+Защита webhook:
 
-## Тестовый режим YooKassa
+- входящий payload не считается источником истины;
+- сервис повторно получает платёж через YooKassa API;
+- сверяются provider payment id, сумма, валюта и metadata (`user_id`, `telegram_id`, `product`);
+- повторный webhook/idempotent callback не создаёт дублей подписки;
+- секретный ключ YooKassa и карточные данные не сохраняются.
 
-Для тестового платежа используйте тестовый магазин YooKassa, тестовые `SHOP_ID`/`SECRET_KEY`, публичный HTTPS URL webhook и кнопку «💳 ОПЛАТИТЬ» в боте. После оплаты можно нажать «🔄 ПРОВЕРИТЬ ОПЛАТУ» — ручная проверка использует тот же обработчик статусов, что и webhook.
+## Scheduler
 
-Если оплата прошла, но ссылка не пришла: подписка остаётся активной, ошибка выдачи доступа пишется в EventLog, администраторы уведомляются, пользователь может запросить ссылку повторно через существующий сценарий выдачи.
+APScheduler запускает ежедневную задачу обслуживания подписок:
 
-## Сохранение платёжного метода
+- отправляет напоминания за 3 дня, за 1 день и в день окончания;
+- пишет `subscription_reminders`, чтобы не отправлять один и тот же reminder повторно;
+- переводит просроченные активные/ручные подписки в `expired`;
+- логирует события в `event_logs`.
 
-Если `PAYMENT_SAVE_METHOD_ENABLED=true`, при первой оплате YooKassa получает запрос на сохранение метода. После успешной оплаты бот сохраняет только безопасный идентификатор метода и маскированное описание. Полный номер карты, CVV, токены и секретный ключ YooKassa не сохраняются.
+## Администраторский раздел
 
-> Рекуррентные списания пока не включены: scheduler и автоматические списания не реализованы. Добавлен только интерфейс `RecurringPaymentService` для будущего этапа.
+Команда `/admin` доступна только Telegram ID из `ADMIN_IDS`. Возможности:
 
-## Запуск
+- просмотр новых анкет и отметка review;
+- поиск пользователей;
+- статистика;
+- ручная активация и выдача invite-ссылки;
+- импорт, продление и отмена подписок;
+- история пользователя;
+- изменение runtime-настроек (`subscription_price`, `subscription_duration_days`, `circle_schedule`, `support_url`).
 
-```bash
-docker compose up --build
-```
+Все административные действия пишутся в `admin_action_logs`.
 
-Миграции применяются автоматически в контейнере бота. Вручную:
+## Production deployment
 
-```bash
-alembic upgrade head
-```
+1. Создать managed PostgreSQL или отдельный PostgreSQL-сервис.
+2. Настроить секреты через secret manager / environment variables.
+3. Запустить миграции `alembic upgrade head` перед rollout.
+4. Разместить приложение за HTTPS reverse proxy.
+5. Настроить YooKassa webhook на публичный HTTPS URL.
+6. Настроить structured logs без DEBUG в production.
+7. Включить health-check на `GET /health`.
+8. Проверить `/start`, `/admin`, создание платежа, webhook и scheduler job на staging.
+9. Настроить backup PostgreSQL и мониторинг ошибок Telegram/YooKassa.
 
-## Проверки
+## Итоговый аудит этапа production-hardening
 
-```bash
-pytest
-ruff check .
-mypy src tests
-docker compose build
-docker compose up -d postgres
-alembic upgrade head
-```
+Исправлено:
 
-## Структура
+- Добавлен `pythonpath = ["src"]` для корректного запуска pytest из исходного дерева.
+- Уточнена строгая типизация репозиториев SQLAlchemy: результаты `scalar/get` приводятся к доменным ORM-типам.
+- Убран `type: ignore` в onboarding callback handlers за счёт проверки, что callback содержит обычное `Message`.
+- Исправлена типизация aiogram/тестового отправителя для lifecycle-сервиса подписок.
+- Исправлена типизация aiohttp timeout через `ClientTimeout`.
+- Добавлены типы тестов и typed history DTO для административной истории.
+- Исправлен тест административного лога, чтобы он использовал `AdminAction`, а не `EventType`.
+- Обновлена документация по архитектуре, БД, Docker, миграциям, YooKassa, scheduler, админке и production deployment.
 
-```text
-src/teleport_bot/
-  bot/              # aiogram app, handlers, FSM, keyboards, middlewares
-  config/           # settings and structured logging
-  db/               # SQLAlchemy base/session infrastructure
-  models/           # ORM models and enums
-  repositories/     # database access layer
-  services/         # payments, access, Telegram and admin notifications
-  texts/            # user-facing content
-  web/              # health and YooKassa webhook endpoints
-alembic/            # database migrations
-tests/              # unit and async repository tests
-```
+Оставшийся технический долг:
 
-## Что намеренно не реализовано
+- В текущем окружении отсутствует `aiosqlite`, поэтому локальный pytest и SQLite-проверка Alembic не могут завершиться без установки dev-зависимостей.
+- В текущем окружении отсутствует Docker CLI, поэтому контейнерные проверки не выполнялись.
+- Для фактической проверки пустой PostgreSQL, downgrade и повторного upgrade нужен доступный PostgreSQL-инстанс.
+- `APScheduler` не поставляет type stubs; для mypy используется scoped override `apscheduler.*`.
 
-Автоматические рекуррентные списания, scheduler автоплатежей, напоминания о продлении, автоматическое удаление пользователя из чата, импорт старых пользователей и дополнительные веб-интерфейсы.
+Рекомендации для следующих этапов:
 
-
-## Подписки, напоминания и администрирование
-
-- Ежедневный APScheduler job проверяет активные и ручные подписки, отправляет напоминания за 3 дня, за 1 день и в день окончания, а также переводит просроченные подписки в `expired`.
-- Повторная успешная оплата через существующий `PaymentService` продлевает текущую запись `Subscription`, не создавая дубль.
-- В админке доступны импорт мигрированных подписок, просмотр подписок, ручное продление, отмена, история пользователя и изменение настроек.
-- Настройки `subscription_price`, `subscription_duration_days`, `circle_schedule`, `support_url` хранятся в таблице `app_settings`; если значения нет, используется `.env`.
+- Добавить CI pipeline с PostgreSQL service container, coverage gate 85%, `ruff`, `mypy`, `pytest`, `alembic upgrade/downgrade/upgrade`.
+- Добавить интеграционные тесты webhook YooKassa с mock HTTP gateway.
+- Добавить проверку покрытия (`pytest --cov`) после добавления `pytest-cov` в dev-зависимости.
+- Добавить миграционный smoke-test на реальной PostgreSQL в Docker/CI.

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,8 +13,9 @@ class SubscriptionRepository:
         self.session = session
 
     async def get_for_user_id(self, user_id: int) -> Subscription | None:
-        return await self.session.scalar(
-            select(Subscription).where(Subscription.user_id == user_id)
+        return cast(
+            Subscription | None,
+            await self.session.scalar(select(Subscription).where(Subscription.user_id == user_id)),
         )
 
     async def activate_manual(

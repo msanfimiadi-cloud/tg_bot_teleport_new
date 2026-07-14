@@ -1,9 +1,10 @@
 import asyncio
 import inspect
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 import pytest
+from _pytest.fixtures import SubRequest
 
 
 def _run(coro: Any) -> Any:
@@ -35,11 +36,11 @@ def pytest_fixture_setup(fixturedef: pytest.FixtureDef[Any], request: pytest.Fix
                 pass
 
         request.addfinalizer(finalizer)
-        fixturedef.cached_result = (result, fixturedef.cache_key(request), None)
+        fixturedef.cached_result = (result, fixturedef.cache_key(cast(SubRequest, request)), None)
         return result
     if inspect.iscoroutinefunction(func):
         kwargs = {name: request.getfixturevalue(name) for name in fixturedef.argnames}
         result = _run(func(**kwargs))
-        fixturedef.cached_result = (result, fixturedef.cache_key(request), None)
+        fixturedef.cached_result = (result, fixturedef.cache_key(cast(SubRequest, request)), None)
         return result
     return None

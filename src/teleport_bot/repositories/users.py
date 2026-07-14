@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Protocol, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,11 +9,20 @@ from teleport_bot.models.enums import QuestionnaireStatus
 
 
 class TelegramUserLike(Protocol):
-    id: int
-    username: str | None
-    first_name: str
-    last_name: str | None
-    language_code: str | None
+    @property
+    def id(self) -> int: ...
+
+    @property
+    def username(self) -> str | None: ...
+
+    @property
+    def first_name(self) -> str: ...
+
+    @property
+    def last_name(self) -> str | None: ...
+
+    @property
+    def language_code(self) -> str | None: ...
 
 
 class UserRepository:
@@ -21,10 +30,13 @@ class UserRepository:
         self.session = session
 
     async def get_by_telegram_id(self, telegram_id: int) -> User | None:
-        return await self.session.scalar(select(User).where(User.telegram_id == telegram_id))
+        return cast(
+            User | None,
+            await self.session.scalar(select(User).where(User.telegram_id == telegram_id)),
+        )
 
     async def get_by_id(self, user_id: int) -> User | None:
-        return await self.session.get(User, user_id)
+        return cast(User | None, await self.session.get(User, user_id))
 
     async def upsert_from_telegram(self, tg_user: TelegramUserLike) -> tuple[User, bool]:
         user = await self.get_by_telegram_id(tg_user.id)
