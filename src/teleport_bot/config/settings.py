@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     health_host: str = "0.0.0.0"
     health_port: int = 8080
     circle_schedule: str = "каждую неделю в 21:00 НСК в четверг"
+    private_chat_id: int | str | None = None
+    subscription_price: str | None = None
+    subscription_duration_days: int = 30
+    support_url: str | None = None
 
     @property
     def admin_telegram_ids(self) -> tuple[int, ...]:

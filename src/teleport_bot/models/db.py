@@ -16,7 +16,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
 
 from teleport_bot.db.base import Base, TimestampMixin
-from teleport_bot.models.enums import FunnelStatus, OnboardingStatus, QuestionnaireStatus
+from teleport_bot.models.enums import (
+    FunnelStatus,
+    OnboardingStatus,
+    QuestionnaireStatus,
+    SubscriptionStatus,
+)
 
 
 class User(TimestampMixin, Base):
@@ -38,6 +43,7 @@ class User(TimestampMixin, Base):
     )
 
     questionnaire: Mapped["Questionnaire"] = relationship(back_populates="user", uselist=False)
+    subscription: Mapped["Subscription | None"] = relationship(back_populates="user", uselist=False)
 
 
 class Questionnaire(TimestampMixin, Base):
@@ -54,8 +60,39 @@ class Questionnaire(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(String(32), default=QuestionnaireStatus.NOT_STARTED.value)
     current_step: Mapped[int] = mapped_column(Integer, default=0)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     user: Mapped[User] = relationship(back_populates="questionnaire")
+
+
+class Subscription(TimestampMixin, Base):
+    __tablename__ = "subscriptions"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_subscriptions_user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    status: Mapped[str] = mapped_column(String(32), default=SubscriptionStatus.INACTIVE.value)
+    payment_provider: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_payment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    activated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    activation_source: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="subscription")
+
+
+class AdminActionLog(Base):
+    __tablename__ = "admin_action_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admin_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    action: Mapped[str] = mapped_column(String(128), index=True)
+    target_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class EventLog(Base):

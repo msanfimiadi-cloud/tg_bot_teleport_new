@@ -29,3 +29,24 @@ class EventType(StrEnum):
     QUESTIONNAIRE_RESTARTED = "questionnaire_restarted"
     PAYMENT_STAGE_REACHED = "payment_stage_reached"
     ADMIN_NOTIFICATION_FAILED = "admin_notification_failed"
+
+
+class SubscriptionStatus(StrEnum):
+    INACTIVE = "inactive"
+    ACTIVE = "active"
+    EXPIRED = "expired"
+    MANUAL = "manual"
+
+
+class ActivationSource(StrEnum):
+    MANUAL = "manual"
+    YOOKASSA = "yookassa"
+    MIGRATION = "migration"
+
+
+class AdminAction(StrEnum):
+    QUESTIONNAIRE_VIEWED = "questionnaire_viewed"
+    MANUAL_SUBSCRIPTION_ACTIVATED = "manual_subscription_activated"
+    MANUAL_LINK_SENT = "manual_link_sent"
+    TELEGRAM_API_ERROR = "telegram_api_error"
+    ACCESS_DENIED = "access_denied"

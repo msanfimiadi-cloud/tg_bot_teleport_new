@@ -4,6 +4,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from teleport_bot.bot.handlers.admin import router as admin_router
 from teleport_bot.bot.handlers.onboarding import router
 from teleport_bot.bot.middlewares import DbSessionMiddleware, SettingsMiddleware
 from teleport_bot.config.settings import Settings
@@ -19,5 +20,6 @@ def create_dispatcher(
     dp = Dispatcher(storage=MemoryStorage())
     dp.update.middleware(DbSessionMiddleware(session_factory))
     dp.update.middleware(SettingsMiddleware(settings))
+    dp.include_router(admin_router)
     dp.include_router(router)
     return dp
