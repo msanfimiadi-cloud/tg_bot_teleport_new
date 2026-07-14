@@ -16,6 +16,8 @@ down_revision: str | None = "20260714_0001"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+json_type = sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")
+
 
 def upgrade() -> None:
     op.add_column(
@@ -48,7 +50,7 @@ def upgrade() -> None:
         sa.Column("admin_id", sa.BigInteger(), nullable=False),
         sa.Column("action", sa.String(length=128), nullable=False),
         sa.Column("target_user_id", sa.BigInteger(), nullable=True),
-        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("payload", json_type, nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),

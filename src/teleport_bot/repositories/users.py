@@ -4,6 +4,7 @@ from typing import Protocol, cast
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from teleport_bot.models.db import Questionnaire, User
 from teleport_bot.models.enums import QuestionnaireStatus
@@ -33,7 +34,11 @@ class UserRepository:
     async def get_by_telegram_id(self, telegram_id: int) -> User | None:
         return cast(
             User | None,
-            await self.session.scalar(select(User).where(User.telegram_id == telegram_id)),
+            await self.session.scalar(
+                select(User)
+                .options(selectinload(User.questionnaire), selectinload(User.subscription))
+                .where(User.telegram_id == telegram_id)
+            ),
         )
 
     async def get_by_id(self, user_id: int) -> User | None:
@@ -110,12 +115,16 @@ class UserRepository:
             user.last_name = tg_user.last_name
             user.language_code = tg_user.language_code
             user.last_activity_at = now
-        if user.questionnaire is None:
-            user.questionnaire = Questionnaire(
+        questionnaire = await self.session.scalar(
+            select(Questionnaire).where(Questionnaire.user_id == user.id)
+        )
+        if questionnaire is None:
+            questionnaire = Questionnaire(
                 user_id=user.id,
                 status=QuestionnaireStatus.NOT_STARTED.value,
                 current_step=0,
             )
-            self.session.add(user.questionnaire)
+            self.session.add(questionnaire)
+        user.questionnaire = questionnaire
         await self.session.flush()
         return user, created
