@@ -39,6 +39,10 @@ from teleport_bot.texts import content
 router = Router()
 
 
+def callback_message(callback: CallbackQuery) -> Message | None:
+    return callback.message if isinstance(callback.message, Message) else None
+
+
 async def get_current_user(session: AsyncSession, message: Message) -> tuple[User, bool]:
     if message.from_user is None:
         raise RuntimeError("message without from_user")
@@ -88,9 +92,10 @@ async def start(
 
 @router.callback_query(F.data == "onboarding:welcome_next")
 async def welcome_next(callback: CallbackQuery) -> None:
-    await callback.message.answer(
-        content.HOW_IT_WORKS, reply_markup=one_button("ДАЛЬШЕ", "questionnaire:start")
-    )  # type: ignore[union-attr]
+    if message := callback_message(callback):
+        await message.answer(
+            content.HOW_IT_WORKS, reply_markup=one_button("ДАЛЬШЕ", "questionnaire:start")
+        )
     await callback.answer()
 
 
@@ -99,14 +104,15 @@ async def questionnaire_start(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
-    if user is None or callback.message is None:
+    message = callback_message(callback)
+    if user is None or message is None:
         await callback.answer()
         return
     user.questionnaire.status = QuestionnaireStatus.IN_PROGRESS.value
     user.questionnaire.current_step = 1
     user.onboarding_status = OnboardingStatus.QUESTIONNAIRE.value
     await EventRepository(session).add(EventType.QUESTIONNAIRE_STARTED, user)
-    await ask_question(callback.message, user, state)
+    await ask_question(message, user, state)
     await callback.answer()
 
 
@@ -115,16 +121,17 @@ async def questionnaire_continue(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
-    if user and callback.message:
-        await ask_question(callback.message, user, state)
+    if user and (message := callback_message(callback)):
+        await ask_question(message, user, state)
     await callback.answer()
 
 
 @router.callback_query(F.data == "questionnaire:restart_ask")
 async def restart_ask(callback: CallbackQuery) -> None:
-    await callback.message.answer(
-        "Старые ответы будут заменены. Начать заново?", reply_markup=confirm_restart()
-    )  # type: ignore[union-attr]
+    if message := callback_message(callback):
+        await message.answer(
+            "Старые ответы будут заменены. Начать заново?", reply_markup=confirm_restart()
+        )
     await callback.answer()
 
 
@@ -133,7 +140,7 @@ async def restart_confirm(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
-    if user and callback.message:
+    if user and (message := callback_message(callback)):
         qn = user.questionnaire
         for question in QUESTIONS:
             setattr(qn, question.field, None)
@@ -141,7 +148,7 @@ async def restart_confirm(
         qn.current_step = 1
         qn.completed_at = None
         await EventRepository(session).add(EventType.QUESTIONNAIRE_RESTARTED, user)
-        await ask_question(callback.message, user, state)
+        await ask_question(message, user, state)
     await callback.answer()
 
 
@@ -174,18 +181,17 @@ async def back(callback: CallbackQuery, session: AsyncSession, state: FSMContext
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     data = await state.get_data()
     step = max(1, int(data.get("step", user.questionnaire.current_step if user else 1)) - 1)
-    if user and callback.message:
+    if user and (message := callback_message(callback)):
         user.questionnaire.current_step = step
         await state.update_data(step=step)
-        await ask_question(callback.message, user, state)
+        await ask_question(message, user, state)
     await callback.answer()
 
 
 @router.callback_query(F.data == "questionnaire:edit")
 async def edit(callback: CallbackQuery) -> None:
-    await callback.message.answer(
-        "Какой ответ изменить?", reply_markup=edit_questions(len(QUESTIONS))
-    )  # type: ignore[union-attr]
+    if message := callback_message(callback):
+        await message.answer("Какой ответ изменить?", reply_markup=edit_questions(len(QUESTIONS)))
     await callback.answer()
 
 
@@ -193,10 +199,10 @@ async def edit(callback: CallbackQuery) -> None:
 async def edit_specific(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     step = int(callback.data.rsplit(":", 1)[-1]) if callback.data else 1
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
-    if user and callback.message:
+    if user and (message := callback_message(callback)):
         user.questionnaire.current_step = step
         await state.update_data(step=step)
-        await ask_question(callback.message, user, state)
+        await ask_question(message, user, state)
     await callback.answer()
 
 
@@ -205,7 +211,7 @@ async def confirm(
     callback: CallbackQuery, session: AsyncSession, bot: Bot, settings: Settings
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
-    if user and callback.message:
+    if user and (message := callback_message(callback)):
         changed = complete(user, user.questionnaire)
         if changed:
             events = EventRepository(session)
@@ -213,7 +219,7 @@ async def confirm(
             await AdminNotifier(bot, settings.admin_telegram_ids, events).questionnaire_completed(
                 user, user.questionnaire
             )
-        await callback.message.answer(
+        await message.answer(
             content.CIRCLE_TEMPLATE.format(circle_schedule=settings.circle_schedule),
             reply_markup=one_button("ДАЛЬШЕ", "onboarding:final"),
         )
@@ -222,18 +228,20 @@ async def confirm(
 
 @router.callback_query(F.data == "onboarding:circle")
 async def circle(callback: CallbackQuery, settings: Settings) -> None:
-    await callback.message.answer(
-        content.CIRCLE_TEMPLATE.format(circle_schedule=settings.circle_schedule),
-        reply_markup=one_button("ДАЛЬШЕ", "onboarding:final"),
-    )  # type: ignore[union-attr]
+    if message := callback_message(callback):
+        await message.answer(
+            content.CIRCLE_TEMPLATE.format(circle_schedule=settings.circle_schedule),
+            reply_markup=one_button("ДАЛЬШЕ", "onboarding:final"),
+        )
     await callback.answer()
 
 
 @router.callback_query(F.data == "onboarding:final")
 async def final_info(callback: CallbackQuery) -> None:
-    await callback.message.answer(
-        content.FINAL_INFO, reply_markup=one_button("ГОТОВ НАЧАТЬ", "payment:start")
-    )  # type: ignore[union-attr]
+    if message := callback_message(callback):
+        await message.answer(
+            content.FINAL_INFO, reply_markup=one_button("ГОТОВ НАЧАТЬ", "payment:start")
+        )
     await callback.answer()
 
 
@@ -242,15 +250,21 @@ async def payment_start(
     callback: CallbackQuery, session: AsyncSession, bot: Bot, settings: Settings
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
-    if user and callback.message:
+    if user and (message := callback_message(callback)):
         user.funnel_status = FunnelStatus.PAYMENT_STAGE_REACHED.value
         user.onboarding_status = OnboardingStatus.PAYMENT_STAGE.value
         events = EventRepository(session)
         await events.add(EventType.PAYMENT_STAGE_REACHED, user)
         await AdminNotifier(bot, settings.admin_telegram_ids, events).payment_stage_reached(user)
-        if callback.data == "payment:start" and SubscriptionRepository.is_active(user.subscription):
-            await callback.message.answer(
-                f"Подписка активна до: {user.subscription.expires_at:%d.%m.%Y}",
+        subscription = user.subscription
+        if (
+            callback.data == "payment:start"
+            and SubscriptionRepository.is_active(subscription)
+            and subscription is not None
+            and subscription.expires_at is not None
+        ):
+            await message.answer(
+                f"Подписка активна до: {subscription.expires_at:%d.%m.%Y}",
                 reply_markup=active_subscription_keyboard(),
             )
         else:
@@ -259,9 +273,9 @@ async def payment_start(
                     session, settings, YooKassaGateway(settings)
                 ).create_or_reuse_payment(callback.from_user.id)
             except PaymentError as exc:
-                await callback.message.answer(f"Не удалось создать оплату: {exc}")
+                await message.answer(f"Не удалось создать оплату: {exc}")
             else:
-                await callback.message.answer(
+                await message.answer(
                     "Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
                     f"Стоимость: {payment.amount} {payment.currency}\n"
                     f"Срок: {settings.subscription_duration_days} дней\n"
@@ -275,32 +289,33 @@ async def payment_start(
 
 @router.callback_query(F.data == "payment:check")
 async def payment_check(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
-    if callback.message:
+    if message := callback_message(callback):
         try:
             payment = await PaymentService(
                 session, settings, YooKassaGateway(settings)
             ).check_latest_payment(callback.from_user.id)
         except Exception as exc:
-            await callback.message.answer(
+            await message.answer(
                 f"Оплата пока не подтверждена или недоступна проверка: {exc.__class__.__name__}"
             )
         else:
             if payment is None:
-                await callback.message.answer("Актуальный платёж не найден. Создай новую оплату.")
+                await message.answer("Актуальный платёж не найден. Создай новую оплату.")
             elif payment.status == "succeeded":
-                await callback.message.answer(
+                await message.answer(
                     "Оплата подтверждена. Подписка активирована, доступ будет выдан автоматически."
                 )
             elif payment.status == "canceled":
-                await callback.message.answer("Платёж отменён. Можно создать новую оплату.")
+                await message.answer("Платёж отменён. Можно создать новую оплату.")
             else:
-                await callback.message.answer("Оплата пока не подтверждена.")
+                await message.answer("Оплата пока не подтверждена.")
     await callback.answer()
 
 
 @router.callback_query(F.data == "payment:get_invite")
 async def payment_get_invite(callback: CallbackQuery) -> None:
-    await callback.message.answer(
-        "Запрос ссылки доступен через администраторскую выдачу или после подтверждения оплаты."
-    )  # type: ignore[union-attr]
+    if message := callback_message(callback):
+        await message.answer(
+            "Запрос ссылки доступен через администраторскую выдачу или после подтверждения оплаты."
+        )
     await callback.answer()

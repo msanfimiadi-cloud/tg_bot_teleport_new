@@ -1,11 +1,18 @@
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any
+from typing import Any, TypedDict
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from teleport_bot.models.db import AdminActionLog, Questionnaire, Subscription, User
+from teleport_bot.models.db import (
+    AdminActionLog,
+    EventLog,
+    Payment,
+    Questionnaire,
+    Subscription,
+    User,
+)
 from teleport_bot.models.enums import AdminAction, QuestionnaireStatus, SubscriptionStatus
 
 
@@ -29,6 +36,15 @@ class AdminLogRepository:
         self.session.add(row)
         await self.session.flush()
         return row
+
+
+class UserHistory(TypedDict):
+    user: User
+    questionnaire: Questionnaire
+    subscription: Subscription | None
+    payments: list[Payment]
+    events: list[EventLog]
+    admin_logs: list[AdminActionLog]
 
 
 class AdminRepository:
@@ -57,7 +73,7 @@ class AdminRepository:
         )
         if query:
             like = f"%{query.lower()}%"
-            conditions = [
+            conditions: list[ColumnElement[bool]] = [
                 func.lower(User.username).like(like),
                 func.lower(User.first_name).like(like),
                 func.lower(User.last_name).like(like),
@@ -138,9 +154,7 @@ class AdminRepository:
             )
         return list((await self.session.scalars(stmt.limit(20))).all())
 
-    async def user_history(self, telegram_id: int) -> dict[str, object] | None:
-        from teleport_bot.models.db import EventLog, Payment
-
+    async def user_history(self, telegram_id: int) -> UserHistory | None:
         user = await self.session.scalar(
             select(User)
             .where(User.telegram_id == telegram_id)

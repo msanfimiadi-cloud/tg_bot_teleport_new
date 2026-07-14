@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -21,7 +22,7 @@ class TgUser:
 
 
 @pytest.fixture
-async def session_factory():
+async def session_factory() -> Any:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -29,7 +30,7 @@ async def session_factory():
     await engine.dispose()
 
 
-async def test_new_user_start_and_repeat_during_questionnaire(session_factory) -> None:
+async def test_new_user_start_and_repeat_during_questionnaire(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         repo = UserRepository(session)
         user, created = await repo.upsert_from_telegram(TgUser(1, None, "A"))
@@ -41,7 +42,7 @@ async def test_new_user_start_and_repeat_during_questionnaire(session_factory) -
         assert again.questionnaire.current_step == 2
 
 
-async def test_repeat_start_after_completed(session_factory) -> None:
+async def test_repeat_start_after_completed(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         user, _ = await UserRepository(session).upsert_from_telegram(TgUser(2, None, "B"))
         user.questionnaire.status = QuestionnaireStatus.COMPLETED.value
@@ -51,7 +52,7 @@ async def test_repeat_start_after_completed(session_factory) -> None:
         assert loaded.questionnaire.status == QuestionnaireStatus.COMPLETED.value
 
 
-async def test_admin_notification_error_event_does_not_break(session_factory) -> None:
+async def test_admin_notification_error_event_does_not_break(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         user, _ = await UserRepository(session).upsert_from_telegram(TgUser(3, None, "C"))
         await EventRepository(session).add(
@@ -61,7 +62,7 @@ async def test_admin_notification_error_event_does_not_break(session_factory) ->
         assert rows[0].event_type == EventType.ADMIN_NOTIFICATION_FAILED.value
 
 
-async def test_payment_stage_event_saved(session_factory) -> None:
+async def test_payment_stage_event_saved(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         user, _ = await UserRepository(session).upsert_from_telegram(TgUser(4, None, "D"))
         await EventRepository(session).add(EventType.PAYMENT_STAGE_REACHED, user)

@@ -4,7 +4,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 import aiohttp
-from aiohttp import BasicAuth
+from aiohttp import BasicAuth, ClientTimeout
 
 from teleport_bot.config.settings import Settings
 
@@ -34,6 +34,7 @@ class YooKassaGatewayProtocol(Protocol):
 
 class YooKassaGateway:
     api_base = "https://api.yookassa.ru/v3"
+    timeout = ClientTimeout(total=20)
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -59,7 +60,7 @@ class YooKassaGateway:
                 f"{self.api_base}/payments",
                 json=payload,
                 headers={"Idempotence-Key": idempotency_key},
-                timeout=20,
+                timeout=self.timeout,
             ) as resp:
                 resp.raise_for_status()
                 return self._parse(await resp.json())
@@ -69,7 +70,7 @@ class YooKassaGateway:
             auth=BasicAuth(self.settings.yookassa_shop_id, self.settings.yookassa_secret_key)
         ) as client:
             async with client.get(
-                f"{self.api_base}/payments/{provider_payment_id}", timeout=20
+                f"{self.api_base}/payments/{provider_payment_id}", timeout=self.timeout
             ) as resp:
                 resp.raise_for_status()
                 return self._parse(await resp.json())
