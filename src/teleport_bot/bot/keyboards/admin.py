@@ -8,6 +8,10 @@ def admin_menu() -> InlineKeyboardMarkup:
         ("💳 Подписки", "admin:subscriptions"),
         ("📨 Отправить ссылку", "admin:send_link"),
         ("➕ Активировать подписку", "admin:activate_subscription"),
+        ("⬇️ Импорт подписки", "admin:import_subscription"),
+        ("➕ Продлить подписку", "admin:extend_subscription"),
+        ("🚫 Отменить подписку", "admin:cancel_subscription"),
+        ("🕘 История пользователя", "admin:user_history"),
         ("📊 Статистика", "admin:stats"),
         ("⚙️ Настройки", "admin:settings"),
     ]

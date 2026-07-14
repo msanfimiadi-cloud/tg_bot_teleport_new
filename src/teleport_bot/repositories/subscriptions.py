@@ -17,7 +17,11 @@ class SubscriptionRepository:
         )
 
     async def activate_manual(
-        self, user: User, expires_at: datetime, activated_by: int | None = None
+        self,
+        user: User,
+        expires_at: datetime,
+        activated_by: int | None = None,
+        activation_source: str = ActivationSource.MANUAL.value,
     ) -> Subscription:
         subscription = await self.get_for_user_id(user.id)
         now = datetime.now(UTC)
@@ -30,7 +34,7 @@ class SubscriptionRepository:
                 started_at=now,
                 expires_at=expires_at,
                 activated_by=activated_by,
-                activation_source=ActivationSource.MANUAL.value,
+                activation_source=activation_source,
             )
             self.session.add(subscription)
         else:
@@ -38,7 +42,7 @@ class SubscriptionRepository:
             subscription.started_at = subscription.started_at or now
             subscription.expires_at = expires_at
             subscription.activated_by = activated_by
-            subscription.activation_source = ActivationSource.MANUAL.value
+            subscription.activation_source = activation_source
         await self.session.flush()
         return subscription
 

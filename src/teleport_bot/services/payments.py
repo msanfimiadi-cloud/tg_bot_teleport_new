@@ -55,8 +55,6 @@ class PaymentService:
             raise PaymentError("user_not_found")
         if user.questionnaire.status != QuestionnaireStatus.COMPLETED.value:
             raise PaymentError("questionnaire_not_completed")
-        if SubscriptionRepository.is_active(user.subscription):
-            raise PaymentError("subscription_active")
         reusable = await self.payments.reusable_pending(
             user.id, self.settings.payment_reuse_minutes
         )

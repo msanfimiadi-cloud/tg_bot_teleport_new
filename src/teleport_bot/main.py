@@ -6,6 +6,7 @@ from teleport_bot.bot.app import create_bot, create_dispatcher
 from teleport_bot.config.logging import configure_logging
 from teleport_bot.config.settings import get_settings
 from teleport_bot.db.session import create_engine, create_session_factory
+from teleport_bot.scheduler import create_scheduler
 from teleport_bot.web.health import create_health_app
 
 
@@ -21,7 +22,12 @@ async def main() -> None:
     await runner.setup()
     site = web.TCPSite(runner, settings.health_host, settings.health_port)
     await site.start()
-    await dp.start_polling(bot)
+    scheduler = create_scheduler(session_factory, bot)
+    scheduler.start()
+    try:
+        await dp.start_polling(bot)
+    finally:
+        scheduler.shutdown(wait=False)
 
 
 if __name__ == "__main__":
