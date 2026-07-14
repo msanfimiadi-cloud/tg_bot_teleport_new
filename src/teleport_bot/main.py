@@ -18,7 +18,7 @@ async def main() -> None:
     bot = create_bot(settings)
     dp = create_dispatcher(settings, session_factory)
 
-    runner = web.AppRunner(create_health_app(settings, session_factory))
+    runner = web.AppRunner(create_health_app(settings, session_factory, bot))
     await runner.setup()
     site = web.TCPSite(runner, settings.health_host, settings.health_port)
     await site.start()
@@ -28,6 +28,9 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         scheduler.shutdown(wait=False)
+        await runner.cleanup()
+        await bot.session.close()
+        await engine.dispose()
 
 
 if __name__ == "__main__":

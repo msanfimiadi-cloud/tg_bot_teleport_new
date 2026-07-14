@@ -14,6 +14,7 @@ from teleport_bot.models.db import (
     User,
 )
 from teleport_bot.models.enums import AdminAction, QuestionnaireStatus, SubscriptionStatus
+from teleport_bot.repositories.events import safe_log_payload
 
 
 class AdminLogRepository:
@@ -31,7 +32,7 @@ class AdminLogRepository:
             admin_id=admin_id,
             action=action.value,
             target_user_id=target_user_id,
-            payload=payload or {},
+            payload=safe_log_payload(payload),
         )
         self.session.add(row)
         await self.session.flush()

@@ -121,3 +121,14 @@ async def test_stats(session_factory: Any) -> None:
         assert stats["total_users"] == 1
         assert stats["completed_questionnaires"] == 1
         assert stats["active_subscriptions"] == 1
+
+
+def test_admin_log_payload_never_stores_full_invite_link() -> None:
+    from teleport_bot.repositories.events import safe_log_payload
+
+    payload = safe_log_payload({"invite_link": "https://t.me/+secret", "chat_id": -100})
+
+    assert "invite_link" not in payload
+    assert payload["invite_link_length"] == len("https://t.me/+secret")
+    assert payload["chat_id"] == -100
+    assert "invite_link_sha256" in payload

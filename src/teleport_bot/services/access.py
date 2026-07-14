@@ -23,6 +23,7 @@ class AccessService:
             raise ValueError("user_not_found")
         if not SubscriptionRepository.is_active(user.subscription):
             raise PermissionError("subscription_inactive")
+        await self.session.commit()
         return await self.telegram.send_single_use_invite(private_chat_id, target_telegram_id)
 
     async def send_manual_invite(
@@ -36,6 +37,7 @@ class AccessService:
             raise ValueError("user_not_found")
         if not SubscriptionRepository.is_active(user.subscription):
             raise PermissionError("subscription_inactive")
+        await self.session.commit()
         try:
             result = await self.telegram.send_single_use_invite(private_chat_id, target_telegram_id)
         except TelegramAPIError as exc:
@@ -51,6 +53,6 @@ class AccessService:
                 admin_id,
                 AdminAction.MANUAL_LINK_SENT,
                 target_telegram_id,
-                {"link": result.invite_link},
+                {"invite_link": result.invite_link},
             )
         return result

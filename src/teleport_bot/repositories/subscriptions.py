@@ -18,6 +18,14 @@ class SubscriptionRepository:
             await self.session.scalar(select(Subscription).where(Subscription.user_id == user_id)),
         )
 
+    async def get_for_user_id_for_update(self, user_id: int) -> Subscription | None:
+        return cast(
+            Subscription | None,
+            await self.session.scalar(
+                select(Subscription).where(Subscription.user_id == user_id).with_for_update()
+            ),
+        )
+
     async def activate_manual(
         self,
         user: User,
