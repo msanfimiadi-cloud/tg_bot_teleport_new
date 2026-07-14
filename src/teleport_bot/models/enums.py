@@ -29,6 +29,18 @@ class EventType(StrEnum):
     QUESTIONNAIRE_RESTARTED = "questionnaire_restarted"
     PAYMENT_STAGE_REACHED = "payment_stage_reached"
     ADMIN_NOTIFICATION_FAILED = "admin_notification_failed"
+    PAYMENT_CREATED = "payment_created"
+    PAYMENT_REUSED = "payment_reused"
+    PAYMENT_STATUS_CHECKED = "payment_status_checked"
+    PAYMENT_SUCCEEDED = "payment_succeeded"
+    PAYMENT_CANCELED = "payment_canceled"
+    PAYMENT_VALIDATION_FAILED = "payment_validation_failed"
+    SUBSCRIPTION_ACTIVATED = "subscription_activated"
+    SUBSCRIPTION_EXTENDED = "subscription_extended"
+    PAYMENT_METHOD_SAVED = "payment_method_saved"
+    INVITE_LINK_CREATED = "invite_link_created"
+    ACCESS_ALREADY_PRESENT = "access_already_present"
+    ACCESS_DELIVERY_FAILED = "access_delivery_failed"
 
 
 class SubscriptionStatus(StrEnum):
@@ -36,6 +48,8 @@ class SubscriptionStatus(StrEnum):
     ACTIVE = "active"
     EXPIRED = "expired"
     MANUAL = "manual"
+    PAUSED = "paused"
+    CANCELLED = "cancelled"
 
 
 class ActivationSource(StrEnum):
@@ -50,3 +64,18 @@ class AdminAction(StrEnum):
     MANUAL_LINK_SENT = "manual_link_sent"
     TELEGRAM_API_ERROR = "telegram_api_error"
     ACCESS_DENIED = "access_denied"
+
+
+class PaymentStatus(StrEnum):
+    PENDING = "pending"
+    WAITING_FOR_CAPTURE = "waiting_for_capture"
+    SUCCEEDED = "succeeded"
+    CANCELED = "canceled"
+    EXPIRED = "expired"
+    FAILED = "failed"
+
+
+class PaymentMethodStatus(StrEnum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+    UNAVAILABLE = "unavailable"
