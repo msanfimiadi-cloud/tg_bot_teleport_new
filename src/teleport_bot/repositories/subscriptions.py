@@ -53,6 +53,7 @@ class SubscriptionRepository:
             subscription.expires_at = expires_at
             subscription.activated_by = activated_by
             subscription.activation_source = activation_source
+        user.subscription = subscription
         await self.session.flush()
         return subscription
 

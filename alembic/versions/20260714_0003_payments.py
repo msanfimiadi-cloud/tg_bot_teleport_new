@@ -16,6 +16,8 @@ down_revision: str | None = "20260714_0002"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+json_type = sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")
+
 
 def upgrade() -> None:
     op.create_table(
@@ -39,7 +41,7 @@ def upgrade() -> None:
         sa.Column("canceled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("failure_code", sa.String(length=128), nullable=True),
         sa.Column("failure_message", sa.Text(), nullable=True),
-        sa.Column("metadata", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("metadata", json_type, nullable=False),
         sa.Column("applied_to_subscription_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
@@ -87,20 +89,21 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_payment_methods_user_id", "payment_methods", ["user_id"], unique=False)
-    op.add_column("subscriptions", sa.Column("last_payment_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_subscriptions_last_payment_id",
-        "subscriptions",
-        "payments",
-        ["last_payment_id"],
-        ["id"],
-        ondelete="SET NULL",
-    )
+    with op.batch_alter_table("subscriptions") as batch_op:
+        batch_op.add_column(sa.Column("last_payment_id", sa.Integer(), nullable=True))
+        batch_op.create_foreign_key(
+            "fk_subscriptions_last_payment_id",
+            "payments",
+            ["last_payment_id"],
+            ["id"],
+            ondelete="SET NULL",
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_subscriptions_last_payment_id", "subscriptions", type_="foreignkey")
-    op.drop_column("subscriptions", "last_payment_id")
+    with op.batch_alter_table("subscriptions") as batch_op:
+        batch_op.drop_constraint("fk_subscriptions_last_payment_id", type_="foreignkey")
+        batch_op.drop_column("last_payment_id")
     op.drop_index("ix_payment_methods_user_id", table_name="payment_methods")
     op.drop_table("payment_methods")
     op.drop_index("ix_payments_created_at", table_name="payments")
