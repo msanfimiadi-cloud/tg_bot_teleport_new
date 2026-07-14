@@ -95,14 +95,18 @@ class PaymentService:
         payment = await self.payments.latest_for_user(user.id)
         if payment is None:
             return None
-        provider = await self.gateway.get_payment(payment.provider_payment_id)
+        provider_payment_id = payment.provider_payment_id
+        provider = await self.gateway.get_payment(provider_payment_id)
         await self.events.add(
             EventType.PAYMENT_STATUS_CHECKED,
             user,
             {"payment_id": payment.id, "status": provider.status},
         )
-        await self.apply_provider_status(payment, provider)
-        return payment
+        locked = await self.payments.get_by_provider_id_for_update(PROVIDER, provider_payment_id)
+        if locked is None:
+            return None
+        await self.apply_provider_status(locked, provider)
+        return locked
 
     async def apply_provider_status(self, payment: Payment, provider: ProviderPayment) -> None:
         user = payment.user or await UserRepository(self.session).get_by_id(payment.user_id)
@@ -151,7 +155,7 @@ class PaymentService:
         payment.payment_method_saved = provider.payment_method_saved
         payment.provider_payment_method_id = provider.payment_method_id
         repo = SubscriptionRepository(self.session)
-        sub = await repo.get_for_user_id(user.id)
+        sub = await repo.get_for_user_id_for_update(user.id)
         event = EventType.SUBSCRIPTION_ACTIVATED
         if sub is None:
             from teleport_bot.models.db import Subscription
@@ -205,7 +209,7 @@ class PaymentService:
                 f"Не удалось выдать доступ после оплаты: {user.telegram_id}", user
             )
             if isinstance(exc, TelegramAPIError):
-                raise
+                return
 
 
 class RecurringPaymentService:

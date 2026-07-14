@@ -52,7 +52,10 @@ class User(TimestampMixin, Base):
 
 class Questionnaire(TimestampMixin, Base):
     __tablename__ = "questionnaires"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_questionnaires_user_id"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_questionnaires_user_id"),
+        Index("ix_questionnaires_review_queue", "status", "reviewed_at", "completed_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
@@ -71,7 +74,10 @@ class Questionnaire(TimestampMixin, Base):
 
 class Subscription(TimestampMixin, Base):
     __tablename__ = "subscriptions"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_subscriptions_user_id"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_subscriptions_user_id"),
+        Index("ix_subscriptions_status_expires", "status", "expires_at"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
@@ -98,6 +104,7 @@ class Payment(TimestampMixin, Base):
         Index("ix_payments_user_id", "user_id"),
         Index("ix_payments_status", "status"),
         Index("ix_payments_created_at", "created_at"),
+        Index("ix_payments_user_created", "user_id", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -178,6 +185,7 @@ class AppSetting(Base):
 
 class AdminActionLog(Base):
     __tablename__ = "admin_action_logs"
+    __table_args__ = (Index("ix_admin_action_logs_target_created", "target_user_id", "created_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     admin_id: Mapped[int] = mapped_column(BigInteger, index=True)
@@ -191,6 +199,7 @@ class AdminActionLog(Base):
 
 class EventLog(Base):
     __tablename__ = "event_logs"
+    __table_args__ = (Index("ix_event_logs_user_created", "user_id", "created_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int | None] = mapped_column(

@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from typing import Protocol, cast
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from teleport_bot.models.db import Questionnaire, User
@@ -39,6 +40,55 @@ class UserRepository:
         return cast(User | None, await self.session.get(User, user_id))
 
     async def upsert_from_telegram(self, tg_user: TelegramUserLike) -> tuple[User, bool]:
+        if self.session.bind and self.session.bind.dialect.name != "postgresql":
+            return await self._upsert_from_telegram_fallback(tg_user)
+        now = datetime.now(UTC)
+        existed = await self.get_by_telegram_id(tg_user.id) is not None
+        values = {
+            "telegram_id": tg_user.id,
+            "username": tg_user.username,
+            "first_name": tg_user.first_name or "",
+            "last_name": tg_user.last_name,
+            "language_code": tg_user.language_code,
+            "first_started_at": now,
+            "last_activity_at": now,
+        }
+        stmt = (
+            pg_insert(User)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=[User.telegram_id],
+                set_={
+                    "username": tg_user.username,
+                    "first_name": tg_user.first_name or "",
+                    "last_name": tg_user.last_name,
+                    "language_code": tg_user.language_code,
+                    "last_activity_at": now,
+                },
+            )
+            .returning(User.id, User.created_at)
+        )
+        row = (await self.session.execute(stmt)).one()
+        created = not existed
+        await self.session.execute(
+            pg_insert(Questionnaire)
+            .values(
+                user_id=row.id,
+                status=QuestionnaireStatus.NOT_STARTED.value,
+                current_step=0,
+            )
+            .on_conflict_do_update(
+                index_elements=[Questionnaire.user_id],
+                set_={"user_id": row.id},
+            )
+        )
+        await self.session.flush()
+        user = await self.get_by_telegram_id(tg_user.id)
+        if user is None:
+            raise RuntimeError("user_upsert_failed")
+        return user, created
+
+    async def _upsert_from_telegram_fallback(self, tg_user: TelegramUserLike) -> tuple[User, bool]:
         user = await self.get_by_telegram_id(tg_user.id)
         created = user is None
         now = datetime.now(UTC)
@@ -54,21 +104,18 @@ class UserRepository:
             )
             self.session.add(user)
             await self.session.flush()
-            questionnaire = Questionnaire(
-                user_id=user.id,
-                status=QuestionnaireStatus.NOT_STARTED.value,
-                current_step=0,
-            )
-            self.session.add(questionnaire)
-            await self.session.flush()
-            user.questionnaire = questionnaire
         else:
             user.username = tg_user.username
             user.first_name = tg_user.first_name or ""
             user.last_name = tg_user.last_name
             user.language_code = tg_user.language_code
             user.last_activity_at = now
-            if user.questionnaire is None:
-                user.questionnaire = Questionnaire(user_id=user.id)
-                self.session.add(user.questionnaire)
+        if user.questionnaire is None:
+            user.questionnaire = Questionnaire(
+                user_id=user.id,
+                status=QuestionnaireStatus.NOT_STARTED.value,
+                current_step=0,
+            )
+            self.session.add(user.questionnaire)
+        await self.session.flush()
         return user, created
