@@ -12,6 +12,7 @@ from teleport_bot.bot.keyboards.onboarding import (
     edit_questions,
     one_button,
     payment_keyboard,
+    request_email_keyboard,
     start_choice,
 )
 from teleport_bot.bot.states import OnboardingStates
@@ -22,7 +23,11 @@ from teleport_bot.repositories.events import EventRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.admin_notifications import AdminNotifier
-from teleport_bot.services.payments import PaymentError, PaymentService
+from teleport_bot.services.payments import (
+    PaymentError,
+    PaymentService,
+    normalize_email,
+)
 from teleport_bot.services.questionnaire import (
     QUESTIONS,
     ValidationError,
@@ -245,9 +250,9 @@ async def final_info(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.in_({"payment:start", "payment:renew"}))
+@router.callback_query(F.data.in_({"payment:start", "payment:renew", "payment:email_continue"}))
 async def payment_start(
-    callback: CallbackQuery, session: AsyncSession, bot: Bot, settings: Settings
+    callback: CallbackQuery, session: AsyncSession, state: FSMContext, bot: Bot, settings: Settings
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user and (message := callback_message(callback)):
@@ -268,6 +273,15 @@ async def payment_start(
                 reply_markup=active_subscription_keyboard(),
             )
         else:
+            if not user.email:
+                await state.set_state(OnboardingStates.payment_email)
+                await message.answer(
+                    "Для фискального чека нужен email. "
+                    "Укажи email, и я сразу продолжу создание платежа.",
+                    reply_markup=request_email_keyboard(),
+                )
+                await callback.answer()
+                return
             try:
                 payment = await PaymentService(
                     session, settings, YooKassaGateway(settings)
@@ -298,6 +312,45 @@ async def payment_start(
                     ),
                 )
     await callback.answer()
+
+
+@router.message(OnboardingStates.payment_email)
+async def payment_email(
+    message: Message, session: AsyncSession, state: FSMContext, bot: Bot, settings: Settings
+) -> None:
+    user, _ = await get_current_user(session, message)
+    try:
+        email = normalize_email(message.text or "")
+    except PaymentError:
+        await message.answer(
+            "Похоже, email указан неверно. Проверь адрес и отправь его ещё раз.",
+            reply_markup=request_email_keyboard(),
+        )
+        return
+    await UserRepository(session).set_email(user, email)
+    await state.clear()
+    events = EventRepository(session)
+    try:
+        payment = await PaymentService(
+            session, settings, YooKassaGateway(settings)
+        ).create_or_reuse_payment(user.telegram_id)
+    except YooKassaRequestError as exc:
+        await AdminNotifier(bot, settings.admin_telegram_ids, events).payment_creation_failed(
+            user, status=exc.status, error_code=exc.error_code, parameter=exc.parameter
+        )
+        await message.answer(
+            "Email сохранён, но не удалось создать платёж. Попробуй ещё раз немного позже."
+        )
+    except PaymentError as exc:
+        await message.answer(f"Email сохранён, но не удалось создать оплату: {exc}")
+    else:
+        await message.answer(
+            "Email сохранён. Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
+            f"Стоимость: {payment.amount} {payment.currency}\n"
+            f"Срок: {settings.subscription_duration_days} дней\n"
+            f"{settings.subscription_description}",
+            reply_markup=payment_keyboard(payment.confirmation_url or settings.yookassa_return_url),
+        )
 
 
 @router.callback_query(F.data == "payment:check")

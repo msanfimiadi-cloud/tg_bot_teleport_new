@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     yookassa_return_url: str = ""
     yookassa_webhook_path: str = "/webhooks/yookassa"
     yookassa_currency: str = "RUB"
+    yookassa_vat_code: int = 1
+    yookassa_payment_mode: str = "full_payment"
+    yookassa_payment_subject: str = "service"
     subscription_price: Decimal = Decimal("990.00")
     subscription_title: str = "Подписка в Телепорт"
     subscription_description: str = "Доступ в закрытое пространство Телепорт"

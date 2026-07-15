@@ -36,6 +36,7 @@ class User(TimestampMixin, Base):
     first_name: Mapped[str] = mapped_column(String(255), default="")
     last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     language_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     onboarding_status: Mapped[str] = mapped_column(String(64), default=OnboardingStatus.NEW.value)
     funnel_status: Mapped[str] = mapped_column(String(64), default=FunnelStatus.ONBOARDING.value)
     first_started_at: Mapped[datetime] = mapped_column(

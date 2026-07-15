@@ -44,6 +44,10 @@ class UserRepository:
     async def get_by_id(self, user_id: int) -> User | None:
         return cast(User | None, await self.session.get(User, user_id))
 
+    async def set_email(self, user: User, email: str) -> None:
+        user.email = email
+        await self.session.flush()
+
     async def upsert_from_telegram(self, tg_user: TelegramUserLike) -> tuple[User, bool]:
         if self.session.bind and self.session.bind.dialect.name != "postgresql":
             return await self._upsert_from_telegram_fallback(tg_user)

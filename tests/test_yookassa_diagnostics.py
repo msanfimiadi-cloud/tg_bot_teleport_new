@@ -49,6 +49,7 @@ class FakeCallback:
 class FakeUser:
     id = 1
     telegram_id = 12345
+    email = "saved@example.com"
     funnel_status = ""
     onboarding_status = ""
     subscription = None
@@ -217,7 +218,7 @@ async def test_payment_start_uses_neutral_user_message_and_safe_admin_notificati
         admin_ids="100", yookassa_secret_key="secret-value", bot_token="bot-token-value"
     )
 
-    await onboarding.payment_start(callback, object(), object(), settings)
+    await onboarding.payment_start(callback, object(), object(), object(), settings)
 
     assert callback.answered is True
     assert message.answers == [
