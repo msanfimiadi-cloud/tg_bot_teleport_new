@@ -33,7 +33,7 @@ from teleport_bot.services.questionnaire import (
     set_answer,
     validate_answer,
 )
-from teleport_bot.services.yookassa import YooKassaGateway
+from teleport_bot.services.yookassa import YooKassaGateway, YooKassaRequestError
 from teleport_bot.texts import content
 
 router = Router()
@@ -272,6 +272,19 @@ async def payment_start(
                 payment = await PaymentService(
                     session, settings, YooKassaGateway(settings)
                 ).create_or_reuse_payment(callback.from_user.id)
+            except YooKassaRequestError as exc:
+                await AdminNotifier(
+                    bot, settings.admin_telegram_ids, events
+                ).payment_creation_failed(
+                    user,
+                    status=exc.status,
+                    error_code=exc.error_code,
+                    parameter=exc.parameter,
+                )
+                await message.answer(
+                    "Не удалось создать платёж. Попробуй ещё раз немного позже. "
+                    "Если ошибка повторится — напиши в поддержку."
+                )
             except PaymentError as exc:
                 await message.answer(f"Не удалось создать оплату: {exc}")
             else:
