@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 
 from aiogram import Bot, F, Router
+from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -27,6 +28,15 @@ def is_admin(settings: Settings, telegram_id: int) -> bool:
     return telegram_id in settings.admin_telegram_ids
 
 
+def chat_type_value(chat_type: object) -> str:
+    return chat_type.value if isinstance(chat_type, ChatType) else str(chat_type)
+
+
+def render_chatid_response(chat_id: int, title: str | None, chat_type: object) -> str:
+    chat_type_text = chat_type_value(chat_type)
+    return f"ID этого чата:\n{chat_id}\n\nНазвание:\n{title or '—'}\n\nТип:\n{chat_type_text}"
+
+
 async def deny(message: Message, session: AsyncSession, settings: Settings) -> None:
     admin_id = message.from_user.id if message.from_user else 0
     await AdminLogRepository(session).add(admin_id, AdminAction.ACCESS_DENIED)
@@ -49,6 +59,25 @@ async def admin_command(message: Message, session: AsyncSession, settings: Setti
         await deny(message, session, settings)
         return
     await message.answer("Административное меню", reply_markup=admin_menu())
+
+
+@router.message(Command("chatid"))
+async def chatid_command(message: Message, session: AsyncSession, settings: Settings) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+
+    if message.chat.type == ChatType.PRIVATE:
+        await message.answer("Эту команду нужно отправить внутри группы.")
+        return
+
+    if message.chat.type in {ChatType.GROUP, ChatType.SUPERGROUP}:
+        await message.answer(
+            render_chatid_response(message.chat.id, message.chat.title, message.chat.type)
+        )
+        return
+
+    await message.answer("Эту команду нужно отправить внутри группы.")
 
 
 @router.callback_query(F.data == "admin:menu")

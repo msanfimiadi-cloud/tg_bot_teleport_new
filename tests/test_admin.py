@@ -3,10 +3,11 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from aiogram.enums import ChatType
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from teleport_bot.bot.handlers.admin import is_admin
+from teleport_bot.bot.handlers.admin import is_admin, render_chatid_response
 from teleport_bot.config.settings import Settings
 from teleport_bot.db.base import Base
 from teleport_bot.models.db import AdminActionLog, Subscription
@@ -33,6 +34,17 @@ async def session_factory() -> Any:
         await conn.run_sync(Base.metadata.create_all)
     yield async_sessionmaker(engine, expire_on_commit=False)
     await engine.dispose()
+
+
+def test_render_chatid_response_for_group() -> None:
+    assert render_chatid_response(-100123, "Teleport", ChatType.SUPERGROUP) == (
+        "ID этого чата:\n"
+        "-100123\n\n"
+        "Название:\n"
+        "Teleport\n\n"
+        "Тип:\n"
+        "supergroup"
+    )
 
 
 def test_admin_access_by_telegram_id() -> None:
