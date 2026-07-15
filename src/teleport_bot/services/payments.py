@@ -5,6 +5,7 @@ from decimal import Decimal
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.stdlib import get_logger
 
 from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import Payment, User
@@ -16,7 +17,10 @@ from teleport_bot.models.enums import (
     SubscriptionStatus,
 )
 from teleport_bot.repositories.events import EventRepository
-from teleport_bot.repositories.payments import PaymentMethodRepository, PaymentRepository
+from teleport_bot.repositories.payments import (
+    PaymentMethodRepository,
+    PaymentRepository,
+)
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.access import AccessService
@@ -27,6 +31,8 @@ from teleport_bot.services.yookassa import (
     YooKassaGatewayProtocol,
     new_idempotency_key,
 )
+
+logger = get_logger(__name__)
 
 PROVIDER = "yookassa"
 PRODUCT = "teleport_subscription"
@@ -59,7 +65,10 @@ def mask_email(email: str) -> str:
 
 class PaymentService:
     def __init__(
-        self, session: AsyncSession, settings: Settings, gateway: YooKassaGatewayProtocol
+        self,
+        session: AsyncSession,
+        settings: Settings,
+        gateway: YooKassaGatewayProtocol,
     ) -> None:
         self.session = session
         self.settings = settings
@@ -77,12 +86,18 @@ class PaymentService:
             user.id, self.settings.payment_reuse_minutes
         )
         if reusable and not self._is_expired(reusable):
-            await self.events.add(EventType.PAYMENT_REUSED, user, {"payment_id": reusable.id})
+            await self.events.add(
+                EventType.PAYMENT_REUSED, user, {"payment_id": reusable.id}
+            )
             return reusable
         key = new_idempotency_key()
         if not user.email:
             raise PaymentContactRequiredError("email_required")
-        metadata = {"user_id": user.id, "telegram_id": user.telegram_id, "product": PRODUCT}
+        metadata = {
+            "user_id": user.id,
+            "telegram_id": user.telegram_id,
+            "product": PRODUCT,
+        }
         provider = await self.gateway.create_payment(
             idempotency_key=key, metadata=metadata, customer_email=user.email
         )
@@ -106,7 +121,10 @@ class PaymentService:
         await self.events.add(
             EventType.PAYMENT_CREATED,
             user,
-            {"payment_id": payment.id, "provider_payment_id": payment.provider_payment_id},
+            {
+                "payment_id": payment.id,
+                "provider_payment_id": payment.provider_payment_id,
+            },
         )
         return payment
 
@@ -124,14 +142,20 @@ class PaymentService:
             user,
             {"payment_id": payment.id, "status": provider.status},
         )
-        locked = await self.payments.get_by_provider_id_for_update(PROVIDER, provider_payment_id)
+        locked = await self.payments.get_by_provider_id_for_update(
+            PROVIDER, provider_payment_id
+        )
         if locked is None:
             return None
         await self.apply_provider_status(locked, provider)
         return locked
 
-    async def apply_provider_status(self, payment: Payment, provider: ProviderPayment) -> None:
-        user = payment.user or await UserRepository(self.session).get_by_id(payment.user_id)
+    async def apply_provider_status(
+        self, payment: Payment, provider: ProviderPayment
+    ) -> None:
+        user = payment.user or await UserRepository(self.session).get_by_id(
+            payment.user_id
+        )
         if user is None:
             raise PaymentValidationError("user_not_found")
         self._validate(payment, provider, user)
@@ -142,14 +166,18 @@ class PaymentService:
             payment.canceled_at = datetime.now(UTC)
             payment.failure_code = provider.failure_code
             payment.failure_message = provider.failure_message
-            await self.events.add(EventType.PAYMENT_CANCELED, user, {"payment_id": payment.id})
+            await self.events.add(
+                EventType.PAYMENT_CANCELED, user, {"payment_id": payment.id}
+            )
         elif provider.status == PaymentStatus.WAITING_FOR_CAPTURE.value:
             payment.status = PaymentStatus.WAITING_FOR_CAPTURE.value
         else:
             payment.status = provider.status
         await self.session.flush()
 
-    def _validate(self, payment: Payment, provider: ProviderPayment, user: User) -> None:
+    def _validate(
+        self, payment: Payment, provider: ProviderPayment, user: User
+    ) -> None:
         errors = []
         if provider.provider_payment_id != payment.provider_payment_id:
             errors.append("payment_id")
@@ -167,7 +195,9 @@ class PaymentService:
         if errors:
             raise PaymentValidationError(",".join(errors))
 
-    async def _succeed(self, payment: Payment, provider: ProviderPayment, user: User) -> None:
+    async def _succeed(
+        self, payment: Payment, provider: ProviderPayment, user: User
+    ) -> None:
         if payment.applied_to_subscription_at is not None:
             payment.status = PaymentStatus.SUCCEEDED.value
             return
@@ -184,7 +214,11 @@ class PaymentService:
 
             sub = Subscription(user_id=user.id)
             self.session.add(sub)
-        elif SubscriptionRepository.is_active(sub) and sub.expires_at and sub.expires_at > now:
+        elif (
+            SubscriptionRepository.is_active(sub)
+            and sub.expires_at
+            and sub.expires_at > now
+        ):
             now = sub.expires_at
             event = EventType.SUBSCRIPTION_EXTENDED
         sub.status = SubscriptionStatus.ACTIVE.value
@@ -192,19 +226,30 @@ class PaymentService:
         sub.payment_provider = PROVIDER
         sub.last_payment_at = payment.paid_at
         sub.started_at = (
-            payment.paid_at if event == EventType.SUBSCRIPTION_ACTIVATED else sub.started_at
+            payment.paid_at
+            if event == EventType.SUBSCRIPTION_ACTIVATED
+            else sub.started_at
         )
         sub.expires_at = now + timedelta(days=self.settings.subscription_duration_days)
         sub.last_payment = payment
         payment.applied_to_subscription_at = datetime.now(UTC)
         if provider.payment_method_saved and provider.payment_method_id:
             await PaymentMethodRepository(self.session).upsert_saved_method(
-                user, PROVIDER, provider.payment_method_id, provider.payment_method_title
+                user,
+                PROVIDER,
+                provider.payment_method_id,
+                provider.payment_method_title,
             )
-            await self.events.add(EventType.PAYMENT_METHOD_SAVED, user, {"payment_id": payment.id})
-        await self.events.add(EventType.PAYMENT_SUCCEEDED, user, {"payment_id": payment.id})
+            await self.events.add(
+                EventType.PAYMENT_METHOD_SAVED, user, {"payment_id": payment.id}
+            )
         await self.events.add(
-            event, user, {"payment_id": payment.id, "expires_at": sub.expires_at.isoformat()}
+            EventType.PAYMENT_SUCCEEDED, user, {"payment_id": payment.id}
+        )
+        await self.events.add(
+            event,
+            user,
+            {"payment_id": payment.id, "expires_at": sub.expires_at.isoformat()},
         )
 
     def _is_expired(self, payment: Payment) -> bool:
@@ -213,23 +258,54 @@ class PaymentService:
     async def deliver_access_after_commit(self, bot: Bot, user: User) -> None:
         try:
             if self.settings.private_chat_id is None:
+                logger.warning(
+                    "access delivery stopped",
+                    reason="private_chat_id_not_configured",
+                    user_id=user.id,
+                    telegram_id=user.telegram_id,
+                )
                 raise RuntimeError("private_chat_id_not_configured")
-            result = await AccessService(self.session, TelegramService(bot)).send_paid_invite(
-                user.telegram_id, self.settings.private_chat_id
+            logger.info(
+                "STEP 4 access service called",
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+                private_chat_id=self.settings.private_chat_id,
             )
+            result = await AccessService(
+                self.session, TelegramService(bot)
+            ).send_paid_invite(user.telegram_id, self.settings.private_chat_id)
             await self.events.add(
-                EventType.ACCESS_ALREADY_PRESENT
-                if result.already_member
-                else EventType.INVITE_LINK_CREATED,
+                (
+                    EventType.ACCESS_ALREADY_PRESENT
+                    if result.already_member
+                    else EventType.INVITE_LINK_CREATED
+                ),
                 user,
             )
+            logger.info(
+                "access delivery completed",
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+                sent=result.sent,
+                already_member=result.already_member,
+                invite_created=result.invite_link is not None,
+            )
         except Exception as exc:
+            logger.warning(
+                "access delivery stopped",
+                reason="exception",
+                error=exc.__class__.__name__,
+                user_id=user.id,
+                telegram_id=user.telegram_id,
+            )
             await self.events.add(
-                EventType.ACCESS_DELIVERY_FAILED, user, {"error": exc.__class__.__name__}
+                EventType.ACCESS_DELIVERY_FAILED,
+                user,
+                {"error": exc.__class__.__name__},
             )
-            await AdminNotifier(bot, self.settings.admin_telegram_ids, self.events)._send(
-                f"Не удалось выдать доступ после оплаты: {user.telegram_id}", user
-            )
+            await AdminNotifier(
+                bot, self.settings.admin_telegram_ids, self.events
+            )._send(f"Не удалось выдать доступ после оплаты: {user.telegram_id}", user)
             if isinstance(exc, TelegramAPIError):
                 return
 
