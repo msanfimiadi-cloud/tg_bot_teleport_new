@@ -153,9 +153,7 @@ class PaymentService:
     async def apply_provider_status(
         self, payment: Payment, provider: ProviderPayment
     ) -> None:
-        user = payment.user or await UserRepository(self.session).get_by_id(
-            payment.user_id
-        )
+        user = await UserRepository(self.session).get_by_id(payment.user_id)
         if user is None:
             raise PaymentValidationError("user_not_found")
         self._validate(payment, provider, user)
