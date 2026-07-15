@@ -4,9 +4,15 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 import aiohttp
-from aiohttp import BasicAuth, ClientTimeout
+from aiohttp import BasicAuth, ClientResponse, ClientTimeout
+from structlog.stdlib import get_logger
 
 from teleport_bot.config.settings import Settings
+
+logger = get_logger(__name__)
+
+_SAFE_TEXT_LIMIT = 2000
+_LOG_JSON_FIELDS = ("code", "description", "parameter", "type", "id")
 
 
 @dataclass(frozen=True)
@@ -23,6 +29,22 @@ class ProviderPayment:
     failure_code: str | None = None
     failure_message: str | None = None
     metadata: dict[str, Any] | None = None
+
+
+class YooKassaRequestError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        status: int,
+        error_code: str | None = None,
+        description: str | None = None,
+        parameter: str | None = None,
+    ) -> None:
+        super().__init__(f"YooKassa request failed with status {status}")
+        self.status = status
+        self.error_code = error_code
+        self.description = description
+        self.parameter = parameter
 
 
 class YooKassaGatewayProtocol(Protocol):
@@ -62,7 +84,9 @@ class YooKassaGateway:
                 headers={"Idempotence-Key": idempotency_key},
                 timeout=self.timeout,
             ) as resp:
-                resp.raise_for_status()
+                await self._raise_for_error(
+                    resp, operation="create_payment", idempotency_key=idempotency_key
+                )
                 return self._parse(await resp.json())
 
     async def get_payment(self, provider_payment_id: str) -> ProviderPayment:
@@ -74,6 +98,49 @@ class YooKassaGateway:
             ) as resp:
                 resp.raise_for_status()
                 return self._parse(await resp.json())
+
+    async def _raise_for_error(
+        self, resp: ClientResponse, *, operation: str, idempotency_key: str
+    ) -> None:
+        if resp.status < 400:
+            return
+        text = await resp.text()
+        data: dict[str, Any] | None = None
+        try:
+            parsed = await resp.json()
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            data = parsed
+        fields = {name: data.get(name) for name in _LOG_JSON_FIELDS if data and data.get(name)}
+        safe_body: dict[str, Any] | str
+        if data is not None:
+            safe_body = self._safe_json(data)
+        else:
+            safe_body = _limit_text(self._redact_text(text))
+        logger.error(
+            "yookassa_request_failed",
+            operation=operation,
+            status=resp.status,
+            idempotency_key=idempotency_key,
+            yookassa_error=fields,
+            response_body=safe_body,
+        )
+        raise YooKassaRequestError(
+            status=resp.status,
+            error_code=str(fields["code"]) if "code" in fields else None,
+            description=str(fields["description"]) if "description" in fields else None,
+            parameter=str(fields["parameter"]) if "parameter" in fields else None,
+        )
+
+    def _safe_json(self, value: Any) -> Any:
+        return _safe_json(value, secrets=self._redaction_values())
+
+    def _redact_text(self, text: str) -> str:
+        return _redact_text(text, secrets=self._redaction_values())
+
+    def _redaction_values(self) -> tuple[str, ...]:
+        return (self.settings.yookassa_secret_key, self.settings.bot_token)
 
     def _parse(self, data: dict[str, Any]) -> ProviderPayment:
         method = data.get("payment_method") or {}
@@ -92,6 +159,42 @@ class YooKassaGateway:
             failure_message=(data.get("cancellation_details") or {}).get("party"),
             metadata=data.get("metadata") or {},
         )
+
+
+def _safe_json(value: Any, *, secrets: tuple[str, ...] = ()) -> Any:
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _is_secret_key(key_text) or key_text == "payment_method":
+                safe[key_text] = "<redacted>"
+            else:
+                safe[key_text] = _safe_json(item, secrets=secrets)
+        return safe
+    if isinstance(value, list):
+        return [_safe_json(item, secrets=secrets) for item in value]
+    if isinstance(value, str):
+        return _limit_text(_redact_text(value, secrets=secrets))
+    return value
+
+
+def _is_secret_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(marker in lowered for marker in ("secret", "token", "authorization"))
+
+
+def _redact_text(text: str, *, secrets: tuple[str, ...] = ()) -> str:
+    redacted = text
+    for secret in (*secrets, "YOOKASSA_SECRET_KEY", "BOT_TOKEN", "Authorization"):
+        if secret:
+            redacted = redacted.replace(secret, "<redacted>")
+    return redacted
+
+
+def _limit_text(text: str) -> str:
+    if len(text) <= _SAFE_TEXT_LIMIT:
+        return text
+    return f"{text[:_SAFE_TEXT_LIMIT]}...<truncated>"
 
 
 def new_idempotency_key() -> str:

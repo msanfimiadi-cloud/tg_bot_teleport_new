@@ -42,3 +42,20 @@ class AdminNotifier:
 
     async def payment_stage_reached(self, user: User) -> None:
         await self._send(f"Пользователь дошёл до оплаты: {user.telegram_id}", user)
+
+    async def payment_creation_failed(
+        self,
+        user: User,
+        *,
+        status: int,
+        error_code: str | None = None,
+        parameter: str | None = None,
+    ) -> None:
+        text = (
+            "Ошибка создания платежа YooKassa\n"
+            f"Telegram ID: {user.telegram_id}\n"
+            f"HTTP status: {status}\n"
+            f"Code: {error_code or '-'}\n"
+            f"Parameter: {parameter or '-'}"
+        )
+        await self._send(text, user)
