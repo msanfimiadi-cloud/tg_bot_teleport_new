@@ -55,6 +55,10 @@ def edit_questions(total: int) -> InlineKeyboardMarkup:
     )
 
 
+def request_email_keyboard() -> InlineKeyboardMarkup:
+    return one_button("Указать email", "payment:email_continue")
+
+
 def payment_keyboard(confirmation_url: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

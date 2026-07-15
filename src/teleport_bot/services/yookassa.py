@@ -49,7 +49,12 @@ class YooKassaRequestError(RuntimeError):
 
 class YooKassaGatewayProtocol(Protocol):
     async def create_payment(
-        self, *, idempotency_key: str, metadata: dict[str, Any]
+        self,
+        *,
+        idempotency_key: str,
+        metadata: dict[str, Any],
+        customer_email: str | None = None,
+        customer_phone: str | None = None,
     ) -> ProviderPayment: ...
     async def get_payment(self, provider_payment_id: str) -> ProviderPayment: ...
 
@@ -62,19 +67,16 @@ class YooKassaGateway:
         self.settings = settings
 
     async def create_payment(
-        self, *, idempotency_key: str, metadata: dict[str, Any]
+        self,
+        *,
+        idempotency_key: str,
+        metadata: dict[str, Any],
+        customer_email: str | None = None,
+        customer_phone: str | None = None,
     ) -> ProviderPayment:
-        payload: dict[str, Any] = {
-            "amount": {
-                "value": str(self.settings.subscription_price),
-                "currency": self.settings.yookassa_currency,
-            },
-            "capture": True,
-            "confirmation": {"type": "redirect", "return_url": self.settings.yookassa_return_url},
-            "description": self.settings.subscription_description,
-            "metadata": metadata,
-            "save_payment_method": self.settings.payment_save_method_enabled,
-        }
+        payload = self._build_payment_payload(
+            metadata=metadata, customer_email=customer_email, customer_phone=customer_phone
+        )
         async with aiohttp.ClientSession(
             auth=BasicAuth(self.settings.yookassa_shop_id, self.settings.yookassa_secret_key)
         ) as client:
@@ -88,6 +90,48 @@ class YooKassaGateway:
                     resp, operation="create_payment", idempotency_key=idempotency_key
                 )
                 return self._parse(await resp.json())
+
+    def _build_payment_payload(
+        self,
+        *,
+        metadata: dict[str, Any],
+        customer_email: str | None = None,
+        customer_phone: str | None = None,
+    ) -> dict[str, Any]:
+        if not customer_email and not customer_phone:
+            raise ValueError("receipt_customer_contact_required")
+        amount = {
+            "value": str(self.settings.subscription_price),
+            "currency": self.settings.yookassa_currency,
+        }
+        customer = {}
+        if customer_email:
+            customer["email"] = customer_email
+        if customer_phone:
+            customer["phone"] = customer_phone
+        payload: dict[str, Any] = {
+            "amount": amount,
+            "capture": True,
+            "confirmation": {"type": "redirect", "return_url": self.settings.yookassa_return_url},
+            "description": self.settings.subscription_description,
+            "metadata": metadata,
+            "save_payment_method": self.settings.payment_save_method_enabled,
+            "receipt": {
+                "customer": customer,
+                "items": [
+                    {
+                        "description": self.settings.subscription_title
+                        or self.settings.subscription_description,
+                        "quantity": "1",
+                        "amount": amount.copy(),
+                        "vat_code": self.settings.yookassa_vat_code,
+                        "payment_mode": self.settings.yookassa_payment_mode,
+                        "payment_subject": self.settings.yookassa_payment_subject,
+                    }
+                ],
+            },
+        }
+        return payload
 
     async def get_payment(self, provider_payment_id: str) -> ProviderPayment:
         async with aiohttp.ClientSession(
@@ -174,7 +218,7 @@ def _safe_json(value: Any, *, secrets: tuple[str, ...] = ()) -> Any:
     if isinstance(value, list):
         return [_safe_json(item, secrets=secrets) for item in value]
     if isinstance(value, str):
-        return _limit_text(_redact_text(value, secrets=secrets))
+        return _limit_text(_mask_email(_redact_text(value, secrets=secrets)))
     return value
 
 
@@ -184,7 +228,7 @@ def _is_secret_key(key: str) -> bool:
 
 
 def _redact_text(text: str, *, secrets: tuple[str, ...] = ()) -> str:
-    redacted = text
+    redacted = _mask_email(text)
     for secret in (*secrets, "YOOKASSA_SECRET_KEY", "BOT_TOKEN", "Authorization"):
         if secret:
             redacted = redacted.replace(secret, "<redacted>")
@@ -199,3 +243,17 @@ def _limit_text(text: str) -> str:
 
 def new_idempotency_key() -> str:
     return str(uuid4())
+
+
+def _mask_email(text: str) -> str:
+    import re
+
+    def repl(match: re.Match[str]) -> str:
+        email = match.group(0)
+        local, domain = email.split("@", 1)
+        visible = local[:1] if local else ""
+        return f"{visible}***@{domain}"
+
+    return re.sub(
+        r"[A-Za-z0-9.!#$%&\'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", repl, text
+    )

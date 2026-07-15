@@ -1,3 +1,4 @@
+import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -29,6 +30,7 @@ from teleport_bot.services.yookassa import (
 
 PROVIDER = "yookassa"
 PRODUCT = "teleport_subscription"
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class PaymentError(RuntimeError):
@@ -37,6 +39,22 @@ class PaymentError(RuntimeError):
 
 class PaymentValidationError(PaymentError):
     pass
+
+
+class PaymentContactRequiredError(PaymentError):
+    pass
+
+
+def normalize_email(email: str) -> str:
+    normalized = email.strip().lower()
+    if len(normalized) > 320 or not _EMAIL_RE.fullmatch(normalized):
+        raise PaymentValidationError("invalid_email")
+    return normalized
+
+
+def mask_email(email: str) -> str:
+    local, _, domain = email.partition("@")
+    return f"{local[:1]}***@{domain}" if domain else "<invalid_email>"
 
 
 class PaymentService:
@@ -62,8 +80,12 @@ class PaymentService:
             await self.events.add(EventType.PAYMENT_REUSED, user, {"payment_id": reusable.id})
             return reusable
         key = new_idempotency_key()
+        if not user.email:
+            raise PaymentContactRequiredError("email_required")
         metadata = {"user_id": user.id, "telegram_id": user.telegram_id, "product": PRODUCT}
-        provider = await self.gateway.create_payment(idempotency_key=key, metadata=metadata)
+        provider = await self.gateway.create_payment(
+            idempotency_key=key, metadata=metadata, customer_email=user.email
+        )
         payment = Payment(
             user_id=user.id,
             provider=PROVIDER,
