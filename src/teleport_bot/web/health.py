@@ -32,7 +32,7 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
     logger.info(
         "STEP 1 webhook received",
         status="ok",
-        event=event,
+        webhook_event=event,
         provider_payment_id=provider_payment_id or None,
     )
     if event not in {
@@ -40,11 +40,11 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
         "payment.canceled",
         "payment.waiting_for_capture",
     }:
-        logger.info("webhook processing stopped", reason="ignored_event", event=event)
+        logger.info("webhook processing stopped", reason="ignored_event", webhook_event=event)
         return web.json_response({"status": "ignored"})
     if not provider_payment_id:
         logger.warning(
-            "webhook processing stopped", reason="payment_id_required", event=event
+            "webhook processing stopped", reason="payment_id_required", webhook_event=event
         )
         return web.json_response({"error": "payment_id_required"}, status=400)
     settings: Settings = request.app["settings"]
