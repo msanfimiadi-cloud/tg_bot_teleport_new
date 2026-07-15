@@ -1,11 +1,14 @@
 from aiogram.exceptions import TelegramAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.stdlib import get_logger
 
 from teleport_bot.models.enums import AdminAction
 from teleport_bot.repositories.admin import AdminLogRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.telegram import InviteLinkResult, TelegramService
+
+logger = get_logger(__name__)
 
 
 class AccessService:
@@ -20,11 +23,43 @@ class AccessService:
     ) -> InviteLinkResult:
         user = await UserRepository(self.session).get_by_telegram_id(target_telegram_id)
         if user is None:
+            logger.warning(
+                "access service stopped",
+                reason="user_not_found",
+                telegram_id=target_telegram_id,
+            )
             raise ValueError("user_not_found")
         if not SubscriptionRepository.is_active(user.subscription):
+            logger.warning(
+                "access service stopped",
+                reason="subscription_inactive",
+                user_id=user.id,
+                telegram_id=target_telegram_id,
+                subscription_status=(
+                    user.subscription.status if user.subscription else None
+                ),
+                subscription_expires_at=(
+                    user.subscription.expires_at.isoformat()
+                    if user.subscription and user.subscription.expires_at
+                    else None
+                ),
+            )
             raise PermissionError("subscription_inactive")
+        logger.info(
+            "access service subscription verified",
+            user_id=user.id,
+            telegram_id=target_telegram_id,
+            subscription_status=user.subscription.status if user.subscription else None,
+            subscription_expires_at=(
+                user.subscription.expires_at.isoformat()
+                if user.subscription and user.subscription.expires_at
+                else None
+            ),
+        )
         await self.session.commit()
-        return await self.telegram.send_single_use_invite(private_chat_id, target_telegram_id)
+        return await self.telegram.send_single_use_invite(
+            private_chat_id, target_telegram_id
+        )
 
     async def send_manual_invite(
         self,
@@ -39,7 +74,9 @@ class AccessService:
             raise PermissionError("subscription_inactive")
         await self.session.commit()
         try:
-            result = await self.telegram.send_single_use_invite(private_chat_id, target_telegram_id)
+            result = await self.telegram.send_single_use_invite(
+                private_chat_id, target_telegram_id
+            )
         except TelegramAPIError as exc:
             await AdminLogRepository(self.session).add(
                 admin_id,
