@@ -1,7 +1,14 @@
 from aiogram import Bot, F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
+from aiogram.types import (
+    CallbackQuery,
+    ChatMemberUpdated,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from teleport_bot.bot.keyboards.onboarding import (
@@ -45,6 +52,39 @@ from teleport_bot.texts import content
 
 router = Router()
 
+GROUP_START_TEXT = "Чтобы запустить бота и заполнить анкету, перейдите в личный чат 👇"
+
+
+def is_private_message(message: Message) -> bool:
+    return message.chat.type == ChatType.PRIVATE
+
+
+def is_private_callback(callback: CallbackQuery) -> bool:
+    message = callback.message
+    chat = getattr(message, "chat", None)
+    return chat is not None and chat.type == ChatType.PRIVATE
+
+
+def start_payload(message: Message) -> str:
+    parts = (message.text or "").split(maxsplit=1)
+    return parts[1] if len(parts) > 1 and parts[1] else "group"
+
+
+async def open_bot_keyboard(bot: Bot, payload: str) -> InlineKeyboardMarkup:
+    me = await bot.get_me()
+    username = me.username
+    if not username:
+        raise RuntimeError("bot username is required to build deep-link")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Открыть бота", url=f"https://t.me/{username}?start={payload}"
+                )
+            ]
+        ]
+    )
+
 
 def callback_message(callback: CallbackQuery) -> Message | None:
     return callback.message if isinstance(callback.message, Message) else None
@@ -75,7 +115,14 @@ async def ask_question(
     )
 
 
-@router.message(CommandStart())
+@router.message(CommandStart(), F.chat.type != ChatType.PRIVATE)
+async def start_in_group(message: Message, bot: Bot) -> None:
+    await message.answer(
+        GROUP_START_TEXT, reply_markup=await open_bot_keyboard(bot, start_payload(message))
+    )
+
+
+@router.message(CommandStart(), F.chat.type == ChatType.PRIVATE)
 async def start(
     message: Message, session: AsyncSession, state: FSMContext, bot: Bot, settings: Settings
 ) -> None:
@@ -109,7 +156,7 @@ async def start(
         )
 
 
-@router.callback_query(F.data == "onboarding:welcome_next")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "onboarding:welcome_next")
 async def welcome_next(callback: CallbackQuery) -> None:
     if message := callback_message(callback):
         await message.answer(
@@ -118,7 +165,7 @@ async def welcome_next(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "questionnaire:start")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:start")
 async def questionnaire_start(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext
 ) -> None:
@@ -135,7 +182,7 @@ async def questionnaire_start(
     await callback.answer()
 
 
-@router.callback_query(F.data == "questionnaire:continue")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:continue")
 async def questionnaire_continue(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext
 ) -> None:
@@ -145,7 +192,9 @@ async def questionnaire_continue(
     await callback.answer()
 
 
-@router.callback_query(F.data == "questionnaire:restart_ask")
+@router.callback_query(
+    F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:restart_ask"
+)
 async def restart_ask(callback: CallbackQuery) -> None:
     if message := callback_message(callback):
         await message.answer(
@@ -154,7 +203,9 @@ async def restart_ask(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "questionnaire:restart_confirm")
+@router.callback_query(
+    F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:restart_confirm"
+)
 async def restart_confirm(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext
 ) -> None:
@@ -202,12 +253,12 @@ async def _save_questionnaire_answer(
         await ask_question(message, user, state)
 
 
-@router.message(OnboardingStates.answering)
+@router.message(OnboardingStates.answering, F.chat.type == ChatType.PRIVATE)
 async def answer_question(message: Message, session: AsyncSession, state: FSMContext) -> None:
     await _save_questionnaire_answer(message, session, state)
 
 
-@router.message(F.text)
+@router.message(F.text, F.chat.type == ChatType.PRIVATE)
 async def recover_questionnaire_answer(
     message: Message, session: AsyncSession, state: FSMContext
 ) -> None:
@@ -219,7 +270,7 @@ async def recover_questionnaire_answer(
     await _save_questionnaire_answer(message, session, state, restore_from_db=True)
 
 
-@router.callback_query(F.data == "questionnaire:back")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:back")
 async def back(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     data = await state.get_data()
@@ -232,14 +283,16 @@ async def back(callback: CallbackQuery, session: AsyncSession, state: FSMContext
     await callback.answer()
 
 
-@router.callback_query(F.data == "questionnaire:edit")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:edit")
 async def edit(callback: CallbackQuery) -> None:
     if message := callback_message(callback):
         await message.answer("Какой ответ изменить?", reply_markup=edit_questions(len(QUESTIONS)))
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("questionnaire:edit:"))
+@router.callback_query(
+    F.message.chat.type == ChatType.PRIVATE, F.data.startswith("questionnaire:edit:")
+)
 async def edit_specific(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     step = int(callback.data.rsplit(":", 1)[-1]) if callback.data else 1
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
@@ -251,7 +304,7 @@ async def edit_specific(callback: CallbackQuery, session: AsyncSession, state: F
     await callback.answer()
 
 
-@router.callback_query(F.data == "questionnaire:confirm")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:confirm")
 async def confirm(
     callback: CallbackQuery, session: AsyncSession, bot: Bot, settings: Settings
 ) -> None:
@@ -295,7 +348,7 @@ async def private_chat_member_updated(
     )
 
 
-@router.callback_query(F.data == "onboarding:circle")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "onboarding:circle")
 async def circle(callback: CallbackQuery, settings: Settings) -> None:
     if message := callback_message(callback):
         await message.answer(
@@ -305,7 +358,7 @@ async def circle(callback: CallbackQuery, settings: Settings) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data == "onboarding:final")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "onboarding:final")
 async def final_info(callback: CallbackQuery) -> None:
     if message := callback_message(callback):
         await message.answer(
@@ -314,7 +367,10 @@ async def final_info(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
-@router.callback_query(F.data.in_({"payment:start", "payment:renew", "payment:email_continue"}))
+@router.callback_query(
+    F.message.chat.type == ChatType.PRIVATE,
+    F.data.in_({"payment:start", "payment:renew", "payment:email_continue"}),
+)
 async def payment_start(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext, bot: Bot, settings: Settings
 ) -> None:
@@ -379,7 +435,7 @@ async def payment_start(
     await callback.answer()
 
 
-@router.message(OnboardingStates.payment_email)
+@router.message(OnboardingStates.payment_email, F.chat.type == ChatType.PRIVATE)
 async def payment_email(
     message: Message, session: AsyncSession, state: FSMContext, bot: Bot, settings: Settings
 ) -> None:
@@ -419,7 +475,7 @@ async def payment_email(
         )
 
 
-@router.callback_query(F.data == "payment:check")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "payment:check")
 async def payment_check(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
     if message := callback_message(callback):
         try:
@@ -444,7 +500,7 @@ async def payment_check(callback: CallbackQuery, session: AsyncSession, settings
     await callback.answer()
 
 
-@router.callback_query(F.data == "payment:get_invite")
+@router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "payment:get_invite")
 async def payment_get_invite(callback: CallbackQuery) -> None:
     if message := callback_message(callback):
         await message.answer(
