@@ -8,6 +8,7 @@ from teleport_bot.services.questionnaire import (
     QUESTIONS,
     ValidationError,
     complete,
+    restore_progress,
     set_answer,
     validate_answer,
 )
@@ -63,6 +64,38 @@ def test_restore_progress_after_restart_from_db_state() -> None:
     u = user()
     u.questionnaire.current_step = 4
     assert u.questionnaire.current_step == 4
+
+
+def test_restore_progress_uses_saved_current_step_after_fsm_loss() -> None:
+    u = user()
+    set_answer(u.questionnaire, 1, "Анна, 30")
+    assert u.questionnaire.current_step == 2
+
+    restored_step = restore_progress(u.questionnaire)
+
+    assert restored_step == 2
+    assert u.questionnaire.current_step == 2
+    assert u.questionnaire.name_and_age == "Анна, 30"
+
+    set_answer(u.questionnaire, restored_step, "Очень длинный корректный ответ")
+    assert u.questionnaire.what_annoys == "Очень длинный корректный ответ"
+    assert u.questionnaire.name_and_age == "Анна, 30"
+    assert u.questionnaire.current_step == 3
+
+
+def test_restore_progress_after_long_pause_finds_first_unfinished_answer() -> None:
+    u = user()
+    u.questionnaire.status = QuestionnaireStatus.IN_PROGRESS.value
+    u.questionnaire.current_step = 1
+    u.questionnaire.name_and_age = "Анна, 30"
+    u.questionnaire.what_annoys = "Раздражает неопределённость"
+
+    restored_step = restore_progress(u.questionnaire)
+
+    assert restored_step == 3
+    assert u.questionnaire.current_step == 3
+    assert u.questionnaire.name_and_age == "Анна, 30"
+    assert u.questionnaire.what_annoys == "Раздражает неопределённость"
 
 
 def test_confirm_questionnaire_idempotent() -> None:

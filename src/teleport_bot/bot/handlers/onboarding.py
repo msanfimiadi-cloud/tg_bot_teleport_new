@@ -13,7 +13,6 @@ from teleport_bot.bot.keyboards.onboarding import (
     one_button,
     payment_keyboard,
     request_email_keyboard,
-    start_choice,
 )
 from teleport_bot.bot.states import OnboardingStates
 from teleport_bot.config.settings import Settings
@@ -36,6 +35,7 @@ from teleport_bot.services.questionnaire import (
     get_question,
     progress_text,
     render_summary,
+    restore_progress,
     set_answer,
     validate_answer,
 )
@@ -56,9 +56,15 @@ async def get_current_user(session: AsyncSession, message: Message) -> tuple[Use
     return await UserRepository(session).upsert_from_telegram(message.from_user)
 
 
-async def ask_question(message: Message, user: User, state: FSMContext) -> None:
+async def ask_question(
+    message: Message, user: User, state: FSMContext, *, restore_from_db: bool = True
+) -> None:
     qn = user.questionnaire
-    step = max(1, min(qn.current_step or 1, len(QUESTIONS)))
+    if restore_from_db:
+        step = restore_progress(qn)
+    else:
+        step = max(1, min(qn.current_step or 1, len(QUESTIONS)))
+        qn.status = QuestionnaireStatus.IN_PROGRESS.value
     await state.set_state(OnboardingStates.answering)
     await state.update_data(step=step)
     question = get_question(step)
@@ -95,7 +101,8 @@ async def start(
             reply_markup=one_button("ДАЛЬШЕ", "onboarding:circle"),
         )
     elif qn.status == QuestionnaireStatus.IN_PROGRESS.value:
-        await message.answer("Ты уже начал анкету.", reply_markup=start_choice())
+        await message.answer("Восстанавливаю анкету с последнего незавершённого вопроса.")
+        await ask_question(message, user, state)
     else:
         await message.answer(
             content.WELCOME, reply_markup=one_button("ДАЛЬШЕ", "onboarding:welcome_next")
@@ -164,11 +171,18 @@ async def restart_confirm(
     await callback.answer()
 
 
-@router.message(OnboardingStates.answering)
-async def answer_question(message: Message, session: AsyncSession, state: FSMContext) -> None:
+async def _save_questionnaire_answer(
+    message: Message, session: AsyncSession, state: FSMContext, *, restore_from_db: bool = False
+) -> None:
     user, _ = await get_current_user(session, message)
     data = await state.get_data()
-    step = int(data.get("step", user.questionnaire.current_step or 1))
+    step = (
+        restore_progress(user.questionnaire)
+        if restore_from_db
+        else int(data.get("step", user.questionnaire.current_step or 1))
+    )
+    await state.set_state(OnboardingStates.answering)
+    await state.update_data(step=step)
     question = get_question(step)
     try:
         answer = validate_answer(question, message.text or "")
@@ -188,6 +202,23 @@ async def answer_question(message: Message, session: AsyncSession, state: FSMCon
         await ask_question(message, user, state)
 
 
+@router.message(OnboardingStates.answering)
+async def answer_question(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    await _save_questionnaire_answer(message, session, state)
+
+
+@router.message(F.text)
+async def recover_questionnaire_answer(
+    message: Message, session: AsyncSession, state: FSMContext
+) -> None:
+    if await state.get_state() is not None:
+        return
+    user, _ = await get_current_user(session, message)
+    if user.questionnaire.status != QuestionnaireStatus.IN_PROGRESS.value:
+        return
+    await _save_questionnaire_answer(message, session, state, restore_from_db=True)
+
+
 @router.callback_query(F.data == "questionnaire:back")
 async def back(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
@@ -195,8 +226,9 @@ async def back(callback: CallbackQuery, session: AsyncSession, state: FSMContext
     step = max(1, int(data.get("step", user.questionnaire.current_step if user else 1)) - 1)
     if user and (message := callback_message(callback)):
         user.questionnaire.current_step = step
+        await state.set_state(OnboardingStates.answering)
         await state.update_data(step=step)
-        await ask_question(message, user, state)
+        await ask_question(message, user, state, restore_from_db=False)
     await callback.answer()
 
 
@@ -213,8 +245,9 @@ async def edit_specific(callback: CallbackQuery, session: AsyncSession, state: F
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user and (message := callback_message(callback)):
         user.questionnaire.current_step = step
+        await state.set_state(OnboardingStates.answering)
         await state.update_data(step=step)
-        await ask_question(message, user, state)
+        await ask_question(message, user, state, restore_from_db=False)
     await callback.answer()
 
 

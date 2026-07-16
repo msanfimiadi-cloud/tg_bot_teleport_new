@@ -87,6 +87,29 @@ def progress_text(step: int) -> str:
     return f"Вопрос {step} из {len(QUESTIONS)}"
 
 
+def get_recovery_step(questionnaire: Questionnaire) -> int:
+    """Return the questionnaire step that should be restored from persisted answers."""
+    current_step = questionnaire.current_step or 1
+    if 1 <= current_step <= len(QUESTIONS):
+        current_question = get_question(current_step)
+        if not getattr(questionnaire, current_question.field):
+            return current_step
+
+    for question in QUESTIONS:
+        if not getattr(questionnaire, question.field):
+            return question.number
+
+    return len(QUESTIONS)
+
+
+def restore_progress(questionnaire: Questionnaire) -> int:
+    """Persist and return the last unfinished questionnaire step."""
+    step = get_recovery_step(questionnaire)
+    questionnaire.status = QuestionnaireStatus.IN_PROGRESS.value
+    questionnaire.current_step = step
+    return step
+
+
 def set_answer(questionnaire: Questionnaire, step: int, answer: str) -> None:
     question = get_question(step)
     setattr(questionnaire, question.field, answer)
