@@ -45,6 +45,9 @@ class User(TimestampMixin, Base):
     last_activity_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    welcome_message_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     questionnaire: Mapped["Questionnaire"] = relationship(back_populates="user", uselist=False)
     subscription: Mapped["Subscription | None"] = relationship(back_populates="user", uselist=False)

@@ -1,7 +1,7 @@
 from aiogram import Bot, F, Router
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from teleport_bot.bot.keyboards.onboarding import (
@@ -28,6 +28,7 @@ from teleport_bot.services.payments import (
     PaymentService,
     normalize_email,
 )
+from teleport_bot.services.public_welcome import publish_questionnaire_and_send_welcome
 from teleport_bot.services.questionnaire import (
     QUESTIONS,
     ValidationError,
@@ -229,6 +230,29 @@ async def confirm(
             reply_markup=one_button("ДАЛЬШЕ", "onboarding:final"),
         )
     await callback.answer()
+
+
+def _is_private_chat_join(event: ChatMemberUpdated, private_chat_id: int | str | None) -> bool:
+    if private_chat_id is None or str(event.chat.id) != str(private_chat_id):
+        return False
+    new_status = getattr(event.new_chat_member.status, "value", event.new_chat_member.status)
+    old_status = getattr(event.old_chat_member.status, "value", event.old_chat_member.status)
+    active_statuses = {"member", "administrator", "creator"}
+    return str(new_status) in active_statuses and str(old_status) not in active_statuses
+
+
+@router.chat_member()
+async def private_chat_member_updated(
+    event: ChatMemberUpdated, session: AsyncSession, bot: Bot, settings: Settings
+) -> None:
+    if not _is_private_chat_join(event, settings.private_chat_id):
+        return
+    user = await UserRepository(session).get_by_telegram_id(event.new_chat_member.user.id)
+    if user is None:
+        return
+    await publish_questionnaire_and_send_welcome(
+        bot, settings, EventRepository(session), user, user.questionnaire
+    )
 
 
 @router.callback_query(F.data == "onboarding:circle")

@@ -47,6 +47,9 @@ class EventType(StrEnum):
     SUBSCRIPTION_CANCELLED = "subscription_cancelled"
     SUBSCRIPTION_EXTENDED_MANUAL = "subscription_extended_manual"
     SETTINGS_CHANGED = "settings_changed"
+    QUESTIONNAIRE_PUBLICATION_FAILED = "questionnaire_publication_failed"
+    PUBLIC_WELCOME_SENT = "public_welcome_sent"
+    PUBLIC_WELCOME_FAILED = "public_welcome_failed"
 
 
 class SubscriptionStatus(StrEnum):
