@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 from aiogram import Bot
 from structlog.stdlib import get_logger
@@ -6,10 +7,10 @@ from structlog.stdlib import get_logger
 from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import Questionnaire, User
 from teleport_bot.models.enums import EventType, QuestionnaireStatus
-from teleport_bot.repositories.events import EventRepository
 from teleport_bot.services.admin_notifications import AdminNotifier
 
 logger = get_logger(__name__)
+
 
 PUBLIC_WELCOME_TEXT = (
     "🎉 Добро пожаловать в «Телепорт»!\n\n"
@@ -35,9 +36,9 @@ def render_public_questionnaire(user: User, questionnaire: Questionnaire) -> str
 
 
 async def publish_questionnaire_and_send_welcome(
-    bot: Bot,
+    bot: Bot | Any,
     settings: Settings,
-    events: EventRepository,
+    events: Any,
     user: User,
     questionnaire: Questionnaire,
 ) -> bool:
