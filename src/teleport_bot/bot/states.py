@@ -24,3 +24,4 @@ class AdminStates(StatesGroup):
     partner_note = State()
     manual_ref_user_id = State()
     manual_ref_partner_id = State()
+    chat_message_text = State()

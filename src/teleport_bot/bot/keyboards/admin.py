@@ -14,6 +14,7 @@ def admin_menu() -> InlineKeyboardMarkup:
         ("🕘 История пользователя", "admin:user_history"),
         ("📊 Статистика", "admin:stats"),
         ("🤝 Партнёры", "admin:partners"),
+        ("✍️ Написать сообщение в чат", "admin:chat_message:start"),
         ("⚙️ Настройки", "admin:settings"),
     ]
     return InlineKeyboardMarkup(
@@ -39,4 +40,57 @@ def partners_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=t, callback_data=d)] for t, d in buttons]
         + [[InlineKeyboardButton(text="⬅️ В меню", callback_data="admin:menu")]]
+    )
+
+
+def admin_chat_message_start_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="admin:chat_message:cancel")],
+            [InlineKeyboardButton(text="⬅️ Назад в админку", callback_data="admin:menu")],
+        ]
+    )
+
+
+def admin_chat_message_preview_menu(draft_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="✅ Опубликовать", callback_data=f"admin:chat_message:publish:{draft_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Изменить текст", callback_data=f"admin:chat_message:edit:{draft_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена", callback_data=f"admin:chat_message:cancel:{draft_id}"
+                )
+            ],
+        ]
+    )
+
+
+def admin_chat_message_retry_menu(draft_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Повторить", callback_data=f"admin:chat_message:publish:{draft_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="✏️ Изменить", callback_data=f"admin:chat_message:edit:{draft_id}"
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена", callback_data=f"admin:chat_message:cancel:{draft_id}"
+                )
+            ],
+        ]
     )

@@ -20,6 +20,7 @@ from sqlalchemy.types import JSON
 
 from teleport_bot.db.base import Base, TimestampMixin
 from teleport_bot.models.enums import (
+    AdminChatMessageDraftStatus,
     FunnelStatus,
     OnboardingStatus,
     QuestionnaireStatus,
@@ -199,6 +200,25 @@ class AdminActionLog(Base):
         JSON().with_variant(JSONB, "postgresql"), default=dict
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AdminChatMessageDraft(TimestampMixin, Base):
+    __tablename__ = "admin_chat_message_drafts"
+    __table_args__ = (
+        Index("ix_admin_chat_message_drafts_admin_status", "admin_telegram_id", "status"),
+        Index("ix_admin_chat_message_drafts_status_updated", "status", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    admin_telegram_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    text: Mapped[str] = mapped_column(Text)
+    text_hash: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(
+        String(32), default=AdminChatMessageDraftStatus.DRAFT.value, index=True
+    )
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class EventLog(Base):

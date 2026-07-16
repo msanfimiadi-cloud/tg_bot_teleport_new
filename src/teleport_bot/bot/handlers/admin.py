@@ -1,15 +1,27 @@
 from datetime import UTC, datetime
 
 from aiogram import Bot, F, Router
-from aiogram.enums import ChatType
-from aiogram.exceptions import TelegramAPIError
+from aiogram.enums import ChatType, ParseMode
+from aiogram.exceptions import (
+    TelegramAPIError,
+    TelegramBadRequest,
+    TelegramForbiddenError,
+    TelegramRetryAfter,
+)
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from teleport_bot.bot.keyboards.admin import admin_menu, back_to_admin_menu, partners_menu
+from teleport_bot.bot.keyboards.admin import (
+    admin_chat_message_preview_menu,
+    admin_chat_message_retry_menu,
+    admin_chat_message_start_menu,
+    admin_menu,
+    back_to_admin_menu,
+    partners_menu,
+)
 from teleport_bot.bot.states import AdminStates
 from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import Partner, Questionnaire, Subscription, User
@@ -19,6 +31,10 @@ from teleport_bot.repositories.settings import SettingsRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.access import AccessService
+from teleport_bot.services.admin_chat_publisher import (
+    AdminChatPublisherService,
+    MessageValidationError,
+)
 from teleport_bot.services.questionnaire import QUESTIONS
 from teleport_bot.services.referrals import ReferralService, partner_link
 from teleport_bot.services.telegram import TelegramService
@@ -32,6 +48,10 @@ def is_admin(settings: Settings, telegram_id: int) -> bool:
 
 def chat_type_value(chat_type: object) -> str:
     return chat_type.value if isinstance(chat_type, ChatType) else str(chat_type)
+
+
+def admin_callback_message(callback: CallbackQuery) -> Message | None:
+    return callback.message if isinstance(callback.message, Message) else None
 
 
 def render_chatid_response(chat_id: int, title: str | None, chat_type: object) -> str:
@@ -87,6 +107,143 @@ async def menu(callback: CallbackQuery, session: AsyncSession, settings: Setting
     if not await guard_callback(callback, session, settings):
         return
     await callback.message.answer("Административное меню", reply_markup=admin_menu())  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:chat_message:start")
+async def chat_message_start(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.set_state(AdminStates.chat_message_text)
+    await state.update_data(chat_message_draft_id=None)
+    await callback.message.answer(  # type: ignore[union-attr]
+        "Отправьте текст сообщения, которое нужно опубликовать в закрытом чате.\n\n"
+        "Можно использовать обычный текст, эмодзи и переносы строк.",
+        reply_markup=admin_chat_message_start_menu(),
+    )
+    await callback.answer()
+
+
+@router.message(AdminStates.chat_message_text)
+async def chat_message_text(
+    message: Message, session: AsyncSession, settings: Settings, state: FSMContext, bot: Bot
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    if not message.text:
+        await message.answer("Пожалуйста, отправьте текстовое сообщение.")
+        return
+    service = AdminChatPublisherService(session, TelegramService(bot), settings)
+    data = await state.get_data()
+    try:
+        draft_id = data.get("chat_message_draft_id")
+        if draft_id:
+            draft = await service.replace_text(int(draft_id), message.from_user.id, message.text)
+        else:
+            draft = await service.create_draft(message.from_user.id, message.text)
+        await state.update_data(chat_message_draft_id=draft.id)
+    except MessageValidationError as exc:
+        await message.answer(str(exc))
+        return
+    await state.clear()
+    await message.answer("Предпросмотр сообщения:")
+    try:
+        await message.answer(
+            draft.text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=admin_chat_message_preview_menu(draft.id),
+        )
+    except TelegramBadRequest as exc:
+        await state.set_state(AdminStates.chat_message_text)
+        await state.update_data(chat_message_draft_id=draft.id)
+        await message.answer(f"Некорректная HTML-разметка: {exc}. Исправьте текст.")
+
+
+@router.callback_query(F.data.startswith("admin:chat_message:edit:"))
+async def chat_message_edit(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext, bot: Bot
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    draft_id = int(callback.data.rsplit(":", 1)[-1]) if callback.data else 0
+    try:
+        draft = await AdminChatPublisherService(
+            session, TelegramService(bot), settings
+        ).get_draft_for_admin(draft_id, callback.from_user.id)
+    except PermissionError:
+        await callback.answer("Черновик недоступен.", show_alert=True)
+        return
+    await state.set_state(AdminStates.chat_message_text)
+    await state.update_data(chat_message_draft_id=draft.id)
+    if message := admin_callback_message(callback):
+        await message.answer(f"Текущий текст:\n\n{draft.text}\n\nОтправьте новую версию сообщения.")
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:chat_message:cancel"))
+async def chat_message_cancel(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext, bot: Bot
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    data = await state.get_data()
+    draft_id = (
+        int(callback.data.rsplit(":", 1)[-1])
+        if callback.data and callback.data.count(":") >= 3
+        else data.get("chat_message_draft_id")
+    )
+    if draft_id:
+        try:
+            await AdminChatPublisherService(session, TelegramService(bot), settings).cancel(
+                int(draft_id), callback.from_user.id
+            )
+        except PermissionError:
+            await callback.answer("Черновик недоступен.", show_alert=True)
+            return
+    await state.clear()
+    if message := admin_callback_message(callback):
+        await message.answer("Публикация отменена.", reply_markup=admin_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:chat_message:publish:"))
+async def chat_message_publish(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, bot: Bot
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    draft_id = int(callback.data.rsplit(":", 1)[-1]) if callback.data else 0
+    if not is_admin(settings, callback.from_user.id):
+        await callback.answer("Недостаточно прав.", show_alert=True)
+        return
+    service = AdminChatPublisherService(session, TelegramService(bot), settings)
+    try:
+        await service.publish(draft_id, callback.from_user.id)
+    except RuntimeError as exc:
+        text = (
+            "Закрытый чат не настроен."
+            if str(exc) == "private_chat_id_missing"
+            else "Черновик уже обрабатывается или недействителен."
+        )
+        if message := admin_callback_message(callback):
+            await message.answer(text, reply_markup=admin_chat_message_retry_menu(draft_id))
+    except (TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter, TelegramAPIError):
+        if message := admin_callback_message(callback):
+            await message.answer(
+                "Не удалось опубликовать сообщение. Проверьте чат, права бота или HTML-разметку.",
+                reply_markup=admin_chat_message_retry_menu(draft_id),
+            )
+    except PermissionError:
+        await callback.answer("Черновик недоступен.", show_alert=True)
+        return
+    else:
+        if message := admin_callback_message(callback):
+            await message.answer(
+                "✅ Сообщение опубликовано в закрытом чате.", reply_markup=back_to_admin_menu()
+            )
     await callback.answer()
 
 

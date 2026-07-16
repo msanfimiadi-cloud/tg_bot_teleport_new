@@ -70,6 +70,10 @@ class EventType(StrEnum):
     REFERRAL_FIRST_PAYMENT_SUCCEEDED = "referral_first_payment_succeeded"
     REFERRAL_MANUALLY_ASSIGNED = "referral_manually_assigned"
     REFERRAL_MANUALLY_REASSIGNED = "referral_manually_reassigned"
+    CHAT_MESSAGE_DRAFT_CREATED = "chat_message_draft_created"
+    CHAT_MESSAGE_PUBLISHED = "chat_message_published"
+    CHAT_MESSAGE_PUBLISH_FAILED = "chat_message_publish_failed"
+    CHAT_MESSAGE_CANCELLED = "chat_message_cancelled"
 
 
 class SubscriptionStatus(StrEnum):
@@ -87,6 +91,14 @@ class ActivationSource(StrEnum):
     MIGRATION = "migration"
 
 
+class AdminChatMessageDraftStatus(StrEnum):
+    DRAFT = "draft"
+    SENDING = "sending"
+    SENT = "sent"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class AdminAction(StrEnum):
     QUESTIONNAIRE_VIEWED = "questionnaire_viewed"
     MANUAL_SUBSCRIPTION_ACTIVATED = "manual_subscription_activated"
@@ -102,6 +114,10 @@ class AdminAction(StrEnum):
     PARTNER_DEACTIVATED = "partner_deactivated"
     REFERRAL_MANUALLY_ASSIGNED = "referral_manually_assigned"
     REFERRAL_MANUALLY_REASSIGNED = "referral_manually_reassigned"
+    CHAT_MESSAGE_DRAFT_CREATED = "chat_message_draft_created"
+    CHAT_MESSAGE_PUBLISHED = "chat_message_published"
+    CHAT_MESSAGE_PUBLISH_FAILED = "chat_message_publish_failed"
+    CHAT_MESSAGE_CANCELLED = "chat_message_cancelled"
 
 
 class PaymentStatus(StrEnum):

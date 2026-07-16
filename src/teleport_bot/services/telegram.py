@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from typing import Any
 
 from aiogram import Bot
+from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from structlog.stdlib import get_logger
 
@@ -17,6 +19,9 @@ class InviteLinkResult:
 class TelegramService:
     def __init__(self, bot: Bot) -> None:
         self.bot = bot
+
+    async def send_admin_chat_message(self, chat_id: int | str, text: str) -> Any:
+        return await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
 
     async def send_single_use_invite(
         self, chat_id: int | str, user_telegram_id: int
@@ -74,12 +79,8 @@ class TelegramService:
                 error=str(exc),
             )
             raise
-        logger.info(
-            "STEP 7 message sent", chat_id=chat_id, telegram_id=user_telegram_id
-        )
-        return InviteLinkResult(
-            sent=True, already_member=False, invite_link=link.invite_link
-        )
+        logger.info("STEP 7 message sent", chat_id=chat_id, telegram_id=user_telegram_id)
+        return InviteLinkResult(sent=True, already_member=False, invite_link=link.invite_link)
 
 
 __all__ = [

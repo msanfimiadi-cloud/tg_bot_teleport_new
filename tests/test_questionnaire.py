@@ -87,6 +87,7 @@ def test_not_authorized_admin_by_username() -> None:
     admin_ids = (42,)
     assert 1 not in admin_ids
 
+
 class FakeBot:
     def __init__(self, fail_on: int | None = None) -> None:
         self.messages: list[tuple[int | str, str]] = []
@@ -123,7 +124,11 @@ async def test_successful_questionnaire_publication_sends_group_welcome() -> Non
     complete(u, u.questionnaire)
     bot = FakeBot()
     sent = await publish_questionnaire_and_send_welcome(
-        bot, Settings(private_chat_id=-100, admin_ids=""), FakeEvents(), u, u.questionnaire  # type: ignore[arg-type]
+        bot,
+        Settings(private_chat_id=-100, admin_ids=""),
+        FakeEvents(),
+        u,
+        u.questionnaire,
     )
 
     assert sent is True
@@ -138,7 +143,11 @@ async def test_unpublished_questionnaire_does_not_send_welcome() -> None:
     u = user()
     bot = FakeBot()
     sent = await publish_questionnaire_and_send_welcome(
-        bot, Settings(private_chat_id=-100, admin_ids=""), FakeEvents(), u, u.questionnaire  # type: ignore[arg-type]
+        bot,
+        Settings(private_chat_id=-100, admin_ids=""),
+        FakeEvents(),
+        u,
+        u.questionnaire,
     )
 
     assert sent is False
@@ -156,8 +165,8 @@ async def test_repeat_chat_member_update_does_not_duplicate_welcome() -> None:
     settings = Settings(private_chat_id=-100, admin_ids="")
     events = FakeEvents()
 
-    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)  # type: ignore[arg-type]
-    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)  # type: ignore[arg-type]
+    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)
+    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)
 
     assert len(bot.messages) == 2
 
@@ -172,9 +181,9 @@ async def test_rejoin_does_not_duplicate_welcome() -> None:
     settings = Settings(private_chat_id=-100, admin_ids="")
     events = FakeEvents()
 
-    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)  # type: ignore[arg-type]
+    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)
     u.questionnaire.status = QuestionnaireStatus.COMPLETED.value
-    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)  # type: ignore[arg-type]
+    await publish_questionnaire_and_send_welcome(bot, settings, events, u, u.questionnaire)
 
     assert len(bot.messages) == 2
 
@@ -188,13 +197,18 @@ async def test_telegram_api_error_does_not_set_welcome_timestamp() -> None:
     bot = FakeBot(fail_on=2)
     events = FakeEvents()
     sent = await publish_questionnaire_and_send_welcome(
-        bot, Settings(private_chat_id=-100, admin_ids=""), events, u, u.questionnaire  # type: ignore[arg-type]
+        bot,
+        Settings(private_chat_id=-100, admin_ids=""),
+        events,
+        u,
+        u.questionnaire,
     )
 
     assert sent is False
     assert len(bot.messages) == 1
     assert u.welcome_message_sent_at is None
     assert events.rows
+
 
 class FakeStatus:
     def __init__(self, value: str) -> None:
