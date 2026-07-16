@@ -39,6 +39,7 @@ from teleport_bot.services.questionnaire import (
     set_answer,
     validate_answer,
 )
+from teleport_bot.services.referrals import ReferralService
 from teleport_bot.services.yookassa import YooKassaGateway, YooKassaRequestError
 from teleport_bot.texts import content
 
@@ -73,6 +74,11 @@ async def start(
     message: Message, session: AsyncSession, state: FSMContext, bot: Bot, settings: Settings
 ) -> None:
     user, created = await get_current_user(session, message)
+    start_parts = (message.text or "").split(maxsplit=1)
+    ref_payload = start_parts[1] if len(start_parts) > 1 else None
+    referrals = ReferralService(session)
+    await referrals.link_partner_user(user)
+    await referrals.attribute_start(user, ref_payload, existing_user=not created)
     events = EventRepository(session)
     if created:
         await events.add(EventType.USER_STARTED, user)
@@ -222,6 +228,7 @@ async def confirm(
         if changed:
             events = EventRepository(session)
             await events.add(EventType.QUESTIONNAIRE_COMPLETED, user)
+            await ReferralService(session).mark_questionnaire_completed(user)
             await AdminNotifier(bot, settings.admin_telegram_ids, events).questionnaire_completed(
                 user, user.questionnaire
             )
@@ -310,6 +317,7 @@ async def payment_start(
                 payment = await PaymentService(
                     session, settings, YooKassaGateway(settings)
                 ).create_or_reuse_payment(callback.from_user.id)
+                await ReferralService(session).mark_payment_link_created(user)
             except YooKassaRequestError as exc:
                 await AdminNotifier(
                     bot, settings.admin_telegram_ids, events
@@ -358,6 +366,7 @@ async def payment_email(
         payment = await PaymentService(
             session, settings, YooKassaGateway(settings)
         ).create_or_reuse_payment(user.telegram_id)
+        await ReferralService(session).mark_payment_link_created(user)
     except YooKassaRequestError as exc:
         await AdminNotifier(bot, settings.admin_telegram_ids, events).payment_creation_failed(
             user, status=exc.status, error_code=exc.error_code, parameter=exc.parameter

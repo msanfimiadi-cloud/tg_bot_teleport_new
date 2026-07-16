@@ -214,3 +214,68 @@ class EventLog(Base):
         JSON().with_variant(JSONB, "postgresql"), default=dict
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Partner(TimestampMixin, Base):
+    __tablename__ = "partners"
+    __table_args__ = (
+        UniqueConstraint("telegram_id", name="uq_partners_telegram_id"),
+        UniqueConstraint("referral_code", name="uq_partners_referral_code"),
+        Index("ix_partners_telegram_id", "telegram_id"),
+        Index("ix_partners_referral_code", "referral_code"),
+        Index("ix_partners_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    display_name: Mapped[str] = mapped_column(String(255))
+    referral_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="active")
+    created_by_admin_id: Mapped[int] = mapped_column(BigInteger)
+    deactivated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    user: Mapped[User | None] = relationship(foreign_keys=[user_id])
+    attributions: Mapped[list["ReferralAttribution"]] = relationship(back_populates="partner")
+
+
+class ReferralAttribution(TimestampMixin, Base):
+    __tablename__ = "referral_attributions"
+    __table_args__ = (
+        UniqueConstraint("referred_user_id", name="uq_referral_attributions_referred_user_id"),
+        Index("ix_referral_attributions_partner_id", "partner_id"),
+        Index("ix_referral_attributions_referred_user_id", "referred_user_id"),
+        Index("ix_referral_attributions_first_start_at", "first_start_at"),
+        Index("ix_referral_attributions_questionnaire_completed_at", "questionnaire_completed_at"),
+        Index("ix_referral_attributions_first_payment_succeeded_at", "first_payment_succeeded_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    referred_user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    partner_id: Mapped[int] = mapped_column(ForeignKey("partners.id", ondelete="RESTRICT"))
+    referral_code_used: Mapped[str] = mapped_column(String(64))
+    first_start_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    questionnaire_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payment_link_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_payment_succeeded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    first_payment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("payments.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by_admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    attribution_source: Mapped[str] = mapped_column(String(32), default="deep_link")
+
+    referred_user: Mapped[User] = relationship(foreign_keys=[referred_user_id])
+    partner: Mapped[Partner] = relationship(back_populates="attributions")
+    first_payment: Mapped[Payment | None] = relationship(foreign_keys=[first_payment_id])

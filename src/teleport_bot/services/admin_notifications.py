@@ -4,6 +4,7 @@ from structlog.stdlib import get_logger
 from teleport_bot.models.db import Questionnaire, User
 from teleport_bot.models.enums import EventType
 from teleport_bot.repositories.events import EventRepository
+from teleport_bot.services.referrals import ReferralService
 
 logger = get_logger(__name__)
 
@@ -30,13 +31,19 @@ class AdminNotifier:
         await self._send(f"Новый пользователь: {user.telegram_id} @{user.username or '-'}", user)
 
     async def questionnaire_completed(self, user: User, questionnaire: Questionnaire) -> None:
+        attr = await ReferralService(self.events.session)._attr(user.id)
+        if attr and attr.partner.username:
+            partner_text = f"{attr.partner.display_name} / @{attr.partner.username}"
+        else:
+            partner_text = attr.partner.display_name if attr else "не указан"
         text = (
             "Анкета подтверждена\n"
             f"Telegram ID: {user.telegram_id}\nUsername: @{user.username}\nИмя: {user.first_name}\n"
             f"1: {questionnaire.name_and_age}\n2: {questionnaire.what_annoys}\n"
             f"3: {questionnaire.what_is_important}\n4: {questionnaire.self_definition}\n"
             f"5: {questionnaire.intention}\n"
-            f"Дата: {questionnaire.completed_at}\nСтатус: {user.funnel_status}"
+            f"Дата: {questionnaire.completed_at}\nСтатус: {user.funnel_status}\n"
+            f"Партнёр: {partner_text}"
         )
         await self._send(text, user)
 

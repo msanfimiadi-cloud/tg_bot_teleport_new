@@ -19,3 +19,8 @@ class AdminStates(StatesGroup):
     history_user_id = State()
     setting_key = State()
     setting_value = State()
+    partner_telegram_id = State()
+    partner_display_name = State()
+    partner_note = State()
+    manual_ref_user_id = State()
+    manual_ref_partner_id = State()
