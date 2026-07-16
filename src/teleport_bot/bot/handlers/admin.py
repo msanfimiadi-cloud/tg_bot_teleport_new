@@ -10,7 +10,7 @@ from aiogram.exceptions import (
 )
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,6 +41,8 @@ from teleport_bot.services.telegram import TelegramService
 
 router = Router()
 
+OPEN_PRIVATE_TEXT = "Чтобы открыть этот раздел, перейдите в личный чат с ботом 👇"
+
 
 def is_admin(settings: Settings, telegram_id: int) -> bool:
     return telegram_id in settings.admin_telegram_ids
@@ -52,6 +54,22 @@ def chat_type_value(chat_type: object) -> str:
 
 def admin_callback_message(callback: CallbackQuery) -> Message | None:
     return callback.message if isinstance(callback.message, Message) else None
+
+
+async def open_private_keyboard(bot: Bot) -> InlineKeyboardMarkup:
+    me = await bot.get_me()
+    username = me.username
+    if not username:
+        raise RuntimeError("bot username is required to build deep-link")
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Открыть бота", url=f"https://t.me/{username}?start=group")]
+        ]
+    )
+
+
+def is_private_chat(message: Message) -> bool:
+    return message.chat.type == ChatType.PRIVATE
 
 
 def render_chatid_response(chat_id: int, title: str | None, chat_type: object) -> str:
@@ -76,7 +94,12 @@ async def guard_callback(
 
 
 @router.message(Command("admin"))
-async def admin_command(message: Message, session: AsyncSession, settings: Settings) -> None:
+async def admin_command(
+    message: Message, session: AsyncSession, settings: Settings, bot: Bot
+) -> None:
+    if not is_private_chat(message):
+        await message.answer(OPEN_PRIVATE_TEXT, reply_markup=await open_private_keyboard(bot))
+        return
     if message.from_user is None or not is_admin(settings, message.from_user.id):
         await deny(message, session, settings)
         return
@@ -807,6 +830,9 @@ async def partners_stats(
 
 @router.message(Command("partner"))
 async def partner_command(message: Message, session: AsyncSession, bot: Bot) -> None:
+    if not is_private_chat(message):
+        await message.answer(OPEN_PRIVATE_TEXT, reply_markup=await open_private_keyboard(bot))
+        return
     if message.from_user is None:
         return
     partner = await ReferralService(session).get_partner_by_telegram_id(message.from_user.id)
