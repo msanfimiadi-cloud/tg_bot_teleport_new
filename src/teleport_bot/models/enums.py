@@ -21,6 +21,16 @@ class FunnelStatus(StrEnum):
     PAYMENT_STAGE_REACHED = "payment_stage_reached"
 
 
+class PartnerStatus(StrEnum):
+    ACTIVE = "active"
+    INACTIVE = "inactive"
+
+
+class AttributionSource(StrEnum):
+    DEEP_LINK = "deep_link"
+    MANUAL = "manual"
+
+
 class EventType(StrEnum):
     USER_STARTED = "user_started"
     QUESTIONNAIRE_STARTED = "questionnaire_started"
@@ -50,6 +60,16 @@ class EventType(StrEnum):
     QUESTIONNAIRE_PUBLICATION_FAILED = "questionnaire_publication_failed"
     PUBLIC_WELCOME_SENT = "public_welcome_sent"
     PUBLIC_WELCOME_FAILED = "public_welcome_failed"
+    PARTNER_CREATED = "partner_created"
+    PARTNER_ACTIVATED = "partner_activated"
+    PARTNER_DEACTIVATED = "partner_deactivated"
+    REFERRAL_ATTRIBUTED = "referral_attributed"
+    REFERRAL_ATTRIBUTION_SKIPPED = "referral_attribution_skipped"
+    REFERRAL_QUESTIONNAIRE_COMPLETED = "referral_questionnaire_completed"
+    REFERRAL_PAYMENT_LINK_CREATED = "referral_payment_link_created"
+    REFERRAL_FIRST_PAYMENT_SUCCEEDED = "referral_first_payment_succeeded"
+    REFERRAL_MANUALLY_ASSIGNED = "referral_manually_assigned"
+    REFERRAL_MANUALLY_REASSIGNED = "referral_manually_reassigned"
 
 
 class SubscriptionStatus(StrEnum):
@@ -77,6 +97,11 @@ class AdminAction(StrEnum):
     SUBSCRIPTION_CANCELLED = "subscription_cancelled"
     SUBSCRIPTION_EXTENDED_MANUAL = "subscription_extended_manual"
     SETTINGS_CHANGED = "settings_changed"
+    PARTNER_CREATED = "partner_created"
+    PARTNER_ACTIVATED = "partner_activated"
+    PARTNER_DEACTIVATED = "partner_deactivated"
+    REFERRAL_MANUALLY_ASSIGNED = "referral_manually_assigned"
+    REFERRAL_MANUALLY_REASSIGNED = "referral_manually_reassigned"
 
 
 class PaymentStatus(StrEnum):

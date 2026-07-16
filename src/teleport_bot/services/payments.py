@@ -25,6 +25,7 @@ from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.access import AccessService
 from teleport_bot.services.admin_notifications import AdminNotifier
+from teleport_bot.services.referrals import ReferralService
 from teleport_bot.services.telegram import TelegramService
 from teleport_bot.services.yookassa import (
     ProviderPayment,
@@ -244,6 +245,7 @@ class PaymentService:
         await self.events.add(
             EventType.PAYMENT_SUCCEEDED, user, {"payment_id": payment.id}
         )
+        await ReferralService(self.session).mark_first_payment_succeeded(user, payment)
         await self.events.add(
             event,
             user,

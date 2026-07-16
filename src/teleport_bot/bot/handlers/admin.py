@@ -6,19 +6,21 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from teleport_bot.bot.keyboards.admin import admin_menu, back_to_admin_menu
+from teleport_bot.bot.keyboards.admin import admin_menu, back_to_admin_menu, partners_menu
 from teleport_bot.bot.states import AdminStates
 from teleport_bot.config.settings import Settings
-from teleport_bot.models.db import Questionnaire, Subscription, User
-from teleport_bot.models.enums import AdminAction
+from teleport_bot.models.db import Partner, Questionnaire, Subscription, User
+from teleport_bot.models.enums import AdminAction, PartnerStatus
 from teleport_bot.repositories.admin import AdminLogRepository, AdminRepository
 from teleport_bot.repositories.settings import SettingsRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.access import AccessService
 from teleport_bot.services.questionnaire import QUESTIONS
+from teleport_bot.services.referrals import ReferralService, partner_link
 from teleport_bot.services.telegram import TelegramService
 
 router = Router()
@@ -496,3 +498,185 @@ async def history_show(
     )
     await state.clear()
     await message.answer(text, reply_markup=back_to_admin_menu())
+
+
+@router.callback_query(F.data == "admin:partners")
+async def partners_root(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await callback.message.answer("🤝 Партнёры", reply_markup=partners_menu())  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:partners:add")
+async def partner_add_start(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.set_state(AdminStates.partner_telegram_id)
+    await callback.message.answer("Введите Telegram ID партнёра.")  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.message(AdminStates.partner_telegram_id)
+async def partner_add_id(
+    message: Message, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    await state.update_data(partner_telegram_id=int(message.text or "0"))
+    user = await UserRepository(session).get_by_telegram_id(int(message.text or "0"))
+    suffix = (
+        f"\nНайден пользователь: @{user.username or '—'} {user.first_name}"
+        if user
+        else "\nПользователь ещё не запускал бота."
+    )
+    await state.set_state(AdminStates.partner_display_name)
+    await message.answer("Введите отображаемое имя партнёра." + suffix)
+
+
+@router.message(AdminStates.partner_display_name)
+async def partner_add_name(
+    message: Message, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    await state.update_data(partner_display_name=message.text or "Партнёр")
+    await state.set_state(AdminStates.partner_note)
+    await message.answer("Введите комментарий или '-' если он не нужен.")
+
+
+@router.message(AdminStates.partner_note)
+async def partner_add_save(
+    message: Message, session: AsyncSession, settings: Settings, state: FSMContext, bot: Bot
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    data = await state.get_data()
+    note = None if message.text == "-" else message.text
+    try:
+        partner = await ReferralService(session).create_partner(
+            telegram_id=int(data["partner_telegram_id"]),
+            display_name=str(data["partner_display_name"]),
+            created_by_admin_id=message.from_user.id,
+            note=note,
+        )
+    except ValueError:
+        await message.answer(
+            "Партнёр с таким Telegram ID уже существует.", reply_markup=back_to_admin_menu()
+        )
+    else:
+        await AdminLogRepository(session).add(
+            message.from_user.id,
+            AdminAction.PARTNER_CREATED,
+            partner.telegram_id,
+            {"partner_id": partner.id},
+        )
+        link = await partner_link(bot, partner)
+        await message.answer(
+            "\n".join(
+                [
+                    "Партнёр создан",
+                    f"Имя: {partner.display_name}",
+                    f"Telegram ID: {partner.telegram_id}",
+                    f"username: @{partner.username or '—'}",
+                    f"Статус: {partner.status}",
+                    f"Ссылка: {link}",
+                    f"Дата: {partner.created_at}",
+                ]
+            ),
+            reply_markup=back_to_admin_menu(),
+        )
+    await state.clear()
+
+
+@router.callback_query(F.data == "admin:partners:list")
+async def partners_list(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    rows = list(
+        (await session.scalars(select(Partner).order_by(Partner.created_at.desc()).limit(20))).all()
+    )
+    text = (
+        "\n\n".join(
+            "\n".join(
+                [
+                    f"#{p.id} {p.display_name}",
+                    f"Telegram ID: {p.telegram_id}",
+                    f"username: @{p.username or '—'}",
+                    f"статус: {p.status}",
+                ]
+            )
+            for p in rows
+        )
+        or "Партнёры не найдены."
+    )
+    await callback.message.answer(text, reply_markup=partners_menu())  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:partners:stats"))
+async def partners_stats(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    rows = list(
+        (await session.scalars(select(Partner).order_by(Partner.created_at.desc()).limit(20))).all()
+    )
+    lines = ["Статистика партнёров"]
+    svc = ReferralService(session)
+    for p in rows:
+        st = await svc.stats(p.id)
+        lines.append(
+            "\n".join(
+                [
+                    f"{p.display_name} ({p.telegram_id}, @{p.username or '—'}, {p.status})",
+                    f"переходы: {st.starts}; анкеты: {st.questionnaires}",
+                    f"платёжные ссылки: {st.payment_links}; первые оплаты: {st.first_payments}",
+                    f"конверсия переход → анкета: {st.start_to_questionnaire:.1f}%",
+                    f"конверсия анкета → оплата: {st.questionnaire_to_payment:.1f}%",
+                    f"общая конверсия: {st.start_to_payment:.1f}%",
+                ]
+            )
+        )
+    await callback.message.answer("\n\n".join(lines), reply_markup=partners_menu())  # type: ignore[union-attr]
+    await callback.answer()
+
+
+@router.message(Command("partner"))
+async def partner_command(message: Message, session: AsyncSession, bot: Bot) -> None:
+    if message.from_user is None:
+        return
+    partner = await ReferralService(session).get_partner_by_telegram_id(message.from_user.id)
+    if partner is None or partner.status != PartnerStatus.ACTIVE.value:
+        await message.answer("Раздел недоступен")
+        return
+    svc = ReferralService(session)
+    all_stats = await svc.stats(partner.id)
+    stats_30 = await svc.stats(partner.id, days=30)
+    link = await partner_link(bot, partner)
+    await message.answer(
+        "\n".join(
+            [
+                "Партнёрская статистика",
+                f"Ссылка: {link}",
+                "",
+                "Всё время:",
+                f"переходы: {all_stats.starts}",
+                f"анкеты: {all_stats.questionnaires}",
+                f"первые оплаты: {all_stats.first_payments}",
+                f"конверсия: {all_stats.start_to_payment:.1f}%",
+                "",
+                "30 дней:",
+                f"переходы: {stats_30.starts}",
+                f"анкеты: {stats_30.questionnaires}",
+                f"первые оплаты: {stats_30.first_payments}",
+                f"конверсия: {stats_30.start_to_payment:.1f}%",
+            ]
+        )
+    )
