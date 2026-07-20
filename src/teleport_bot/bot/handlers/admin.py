@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 from aiogram import Bot, F, Router
@@ -21,7 +22,10 @@ from teleport_bot.bot.keyboards.admin import (
     admin_menu,
     back_to_admin_menu,
     partners_menu,
+    payment_reminder_confirm,
+    payment_reminder_menu,
 )
+from teleport_bot.bot.keyboards.onboarding import payment_reminder_keyboard
 from teleport_bot.bot.states import AdminStates
 from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import Partner, Questionnaire, Subscription, User
@@ -43,6 +47,11 @@ from teleport_bot.services.telegram import TelegramService
 router = Router()
 
 OPEN_PRIVATE_TEXT = "Чтобы открыть этот раздел, перейдите в личный чат с ботом 👇"
+PAYMENT_REMINDER_TEXT = (
+    "💳 <b>Подписка на закрытое пространство</b>\n\n"
+    "Вы можете подключить подписку или продлить действующую. "
+    "Нажмите кнопку ниже, чтобы перейти к оплате."
+)
 
 
 def is_admin(settings: Settings, telegram_id: int) -> bool:
@@ -122,6 +131,37 @@ async def guard_callback(
     await AdminLogRepository(session).add(callback.from_user.id, AdminAction.ACCESS_DENIED)
     await callback.answer("Недостаточно прав.", show_alert=True)
     return False
+
+
+async def send_payment_reminders(bot: Bot, telegram_ids: list[int]) -> tuple[int, int]:
+    sent = 0
+    failed = 0
+    for index, telegram_id in enumerate(telegram_ids):
+        try:
+            await bot.send_message(
+                telegram_id,
+                PAYMENT_REMINDER_TEXT,
+                reply_markup=payment_reminder_keyboard(),
+            )
+        except TelegramRetryAfter as exc:
+            await asyncio.sleep(min(max(float(exc.retry_after), 0.0), 30.0))
+            try:
+                await bot.send_message(
+                    telegram_id,
+                    PAYMENT_REMINDER_TEXT,
+                    reply_markup=payment_reminder_keyboard(),
+                )
+            except TelegramAPIError:
+                failed += 1
+            else:
+                sent += 1
+        except TelegramAPIError:
+            failed += 1
+        else:
+            sent += 1
+        if index + 1 < len(telegram_ids):
+            await asyncio.sleep(0.05)
+    return sent, failed
 
 
 @router.message(Command("admin"))
@@ -390,6 +430,129 @@ async def settings_view(callback: CallbackQuery, session: AsyncSession, settings
         reply_markup=back_to_admin_menu(),
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "admin:payment_reminder")
+async def payment_reminder(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.clear()
+    if message := admin_callback_message(callback):
+        await message.answer(
+            "Кому отправить уведомление о подключении или продлении подписки?",
+            reply_markup=payment_reminder_menu(),
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:payment_reminder:all")
+async def payment_reminder_all_confirm(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    count = len(await UserRepository(session).all_telegram_ids())
+    if message := admin_callback_message(callback):
+        if count:
+            await message.answer(
+                f"Отправить уведомление всем пользователям? Получателей: {count}.",
+                reply_markup=payment_reminder_confirm(count),
+            )
+        else:
+            await message.answer("Пользователей для рассылки пока нет.", reply_markup=admin_menu())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:payment_reminder:confirm_all")
+async def payment_reminder_all_send(
+    callback: CallbackQuery,
+    session: AsyncSession,
+    settings: Settings,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    if await state.get_state() == AdminStates.payment_reminder_broadcast:
+        await callback.answer("Рассылка уже выполняется", show_alert=True)
+        return
+    await state.set_state(AdminStates.payment_reminder_broadcast)
+    try:
+        telegram_ids = await UserRepository(session).all_telegram_ids()
+        await callback.answer("Рассылка запущена")
+        message = admin_callback_message(callback)
+        if message:
+            try:
+                await message.edit_reply_markup(reply_markup=None)
+            except TelegramBadRequest:
+                pass
+            await message.answer(f"Начинаю рассылку. Получателей: {len(telegram_ids)}.")
+        sent, failed = await send_payment_reminders(bot, telegram_ids)
+        await AdminLogRepository(session).add(
+            callback.from_user.id,
+            AdminAction.PAYMENT_REMINDER_BROADCAST,
+            payload={"recipients": len(telegram_ids), "sent": sent, "failed": failed},
+        )
+        if message:
+            await message.answer(
+                f"Рассылка завершена. Отправлено: {sent}. Не доставлено: {failed}.",
+                reply_markup=back_to_admin_menu(),
+            )
+    finally:
+        await state.clear()
+
+
+@router.callback_query(F.data == "admin:payment_reminder:user")
+async def payment_reminder_user_start(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, state: FSMContext
+) -> None:
+    if not await guard_callback(callback, session, settings):
+        return
+    await state.set_state(AdminStates.payment_reminder_user_id)
+    if message := admin_callback_message(callback):
+        await message.answer("Введите Telegram ID пользователя.")
+    await callback.answer()
+
+
+@router.message(AdminStates.payment_reminder_user_id)
+async def payment_reminder_user_send(
+    message: Message,
+    session: AsyncSession,
+    settings: Settings,
+    state: FSMContext,
+    bot: Bot,
+) -> None:
+    if message.from_user is None or not is_admin(settings, message.from_user.id):
+        await deny(message, session, settings)
+        return
+    try:
+        telegram_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
+    user = await UserRepository(session).get_by_telegram_id(telegram_id)
+    if user is None:
+        await message.answer("Пользователь не найден. Проверьте Telegram ID.")
+        return
+    sent, _ = await send_payment_reminders(bot, [telegram_id])
+    if sent:
+        await AdminLogRepository(session).add(
+            message.from_user.id,
+            AdminAction.PAYMENT_REMINDER_SENT,
+            telegram_id,
+        )
+        await message.answer(
+            "Уведомление об оплате отправлено.", reply_markup=back_to_admin_menu()
+        )
+        await state.clear()
+    else:
+        await message.answer(
+            "Не удалось доставить сообщение. Возможно, пользователь заблокировал бота.",
+            reply_markup=back_to_admin_menu(),
+        )
+        await state.clear()
 
 
 @router.message(Command("set_setting"))

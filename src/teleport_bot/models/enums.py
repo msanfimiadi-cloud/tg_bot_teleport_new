@@ -118,6 +118,8 @@ class AdminAction(StrEnum):
     CHAT_MESSAGE_PUBLISHED = "chat_message_published"
     CHAT_MESSAGE_PUBLISH_FAILED = "chat_message_publish_failed"
     CHAT_MESSAGE_CANCELLED = "chat_message_cancelled"
+    PAYMENT_REMINDER_BROADCAST = "payment_reminder_broadcast"
+    PAYMENT_REMINDER_SENT = "payment_reminder_sent"
 
 
 class PaymentStatus(StrEnum):

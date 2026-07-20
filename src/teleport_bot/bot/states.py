@@ -25,3 +25,5 @@ class AdminStates(StatesGroup):
     manual_ref_user_id = State()
     manual_ref_partner_id = State()
     chat_message_text = State()
+    payment_reminder_user_id = State()
+    payment_reminder_broadcast = State()

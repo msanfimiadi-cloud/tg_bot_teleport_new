@@ -65,6 +65,19 @@ def payment_keyboard(confirmation_url: str) -> InlineKeyboardMarkup:
     )
 
 
+def payment_reminder_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="💳 ПОДКЛЮЧИТЬ ИЛИ ПРОДЛИТЬ",
+                    callback_data="payment:renew",
+                )
+            ]
+        ]
+    )
+
+
 def active_subscription_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

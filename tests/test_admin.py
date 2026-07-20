@@ -13,7 +13,9 @@ from teleport_bot.bot.handlers.admin import (
     parse_positive_days,
     parse_telegram_id,
     render_chatid_response,
+    send_payment_reminders,
 )
+from teleport_bot.bot.keyboards.admin import admin_menu, payment_reminder_confirm
 from teleport_bot.config.settings import Settings
 from teleport_bot.db.base import Base
 from teleport_bot.models.db import AdminActionLog, Subscription
@@ -135,6 +137,48 @@ async def test_user_search(session_factory: Any) -> None:
         assert [u.telegram_id for u in by_username] == [100]
         assert [u.telegram_id for u in by_id] == [200]
         assert [u.telegram_id for u in by_name] == [100]
+
+
+async def test_all_user_telegram_ids(session_factory: Any) -> None:
+    async with session_factory() as session, session.begin():
+        await UserRepository(session).upsert_from_telegram(TgUser(101, "one", "One"))
+        await UserRepository(session).upsert_from_telegram(TgUser(202, "two", "Two"))
+
+        assert await UserRepository(session).all_telegram_ids() == [101, 202]
+
+
+async def test_payment_reminder_is_sent_with_payment_button(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeBot:
+        def __init__(self) -> None:
+            self.messages: list[tuple[int, str, Any]] = []
+
+        async def send_message(self, chat_id: int, text: str, **kwargs: Any) -> None:
+            self.messages.append((chat_id, text, kwargs.get("reply_markup")))
+
+    async def no_sleep(_: float) -> None:
+        return None
+
+    monkeypatch.setattr("teleport_bot.bot.handlers.admin.asyncio.sleep", no_sleep)
+    bot = FakeBot()
+
+    sent, failed = await send_payment_reminders(bot, [101, 202])  # type: ignore[arg-type]
+
+    assert (sent, failed) == (2, 0)
+    assert [message[0] for message in bot.messages] == [101, 202]
+    button = bot.messages[0][2].inline_keyboard[0][0]
+    assert button.callback_data == "payment:renew"
+
+
+def test_payment_reminder_admin_buttons_require_confirmation() -> None:
+    menu_callbacks = {
+        button.callback_data for row in admin_menu().inline_keyboard for button in row
+    }
+    assert "admin:payment_reminder" in menu_callbacks
+    confirm_button = payment_reminder_confirm(12).inline_keyboard[0][0]
+    assert confirm_button.callback_data == "admin:payment_reminder:confirm_all"
+    assert "12" in confirm_button.text
 
 
 async def test_stats(session_factory: Any) -> None:

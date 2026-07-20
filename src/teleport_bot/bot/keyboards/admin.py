@@ -6,7 +6,8 @@ def admin_menu() -> InlineKeyboardMarkup:
         ("📋 Новые анкеты", "admin:new_questionnaires"),
         ("👥 Пользователи", "admin:users:1"),
         ("💳 Подписки", "admin:subscriptions"),
-        ("📨 Отправить ссылку", "admin:send_link"),
+        ("💰 Напомнить об оплате", "admin:payment_reminder"),
+        ("📨 Ссылка в закрытый чат", "admin:send_link"),
         ("➕ Активировать подписку", "admin:activate_subscription"),
         ("⬇️ Импорт подписки", "admin:import_subscription"),
         ("➕ Продлить подписку", "admin:extend_subscription"),
@@ -27,6 +28,45 @@ def admin_menu() -> InlineKeyboardMarkup:
 def back_to_admin_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text="⬅️ В меню", callback_data="admin:menu")]]
+    )
+
+
+def payment_reminder_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="📣 Отправить всем",
+                    callback_data="admin:payment_reminder:all",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="👤 Отправить одному",
+                    callback_data="admin:payment_reminder:user",
+                )
+            ],
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="admin:menu")],
+        ]
+    )
+
+
+def payment_reminder_confirm(count: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=f"✅ Да, отправить ({count})",
+                    callback_data="admin:payment_reminder:confirm_all",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text="❌ Отмена",
+                    callback_data="admin:payment_reminder",
+                )
+            ],
+        ]
     )
 
 

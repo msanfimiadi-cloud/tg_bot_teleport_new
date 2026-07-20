@@ -398,6 +398,13 @@ async def payment_start(
                 reply_markup=active_subscription_keyboard(),
             )
         else:
+            if user.questionnaire.status != QuestionnaireStatus.COMPLETED.value:
+                await message.answer(
+                    "Чтобы перейти к оплате, сначала заверши анкету.",
+                    reply_markup=one_button("ПРОДОЛЖИТЬ АНКЕТУ", "questionnaire:continue"),
+                )
+                await callback.answer()
+                return
             if not user.email:
                 await state.set_state(OnboardingStates.payment_email)
                 await message.answer(

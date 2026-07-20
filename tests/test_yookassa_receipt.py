@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -9,6 +10,7 @@ from teleport_bot.config.settings import Settings
 from teleport_bot.db.base import Base
 from teleport_bot.models.db import Payment
 from teleport_bot.models.enums import QuestionnaireStatus
+from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.payments import (
     PaymentContactRequiredError,
@@ -165,6 +167,49 @@ async def test_successful_payment_updates_loaded_user_subscription(session_facto
         )
         assert user.subscription is not None
         assert user.subscription.status == "active"
+
+
+async def test_successful_renewal_extends_active_subscription_from_current_expiry(
+    session_factory: Any,
+) -> None:
+    async with session_factory() as session, session.begin():
+        user, _ = await UserRepository(session).upsert_from_telegram(TgUser(13, "renew", "A"))
+        user.questionnaire.status = QuestionnaireStatus.COMPLETED.value
+        current_expiry = datetime.now(UTC) + timedelta(days=12)
+        await SubscriptionRepository(session).activate_manual(user, current_expiry)
+        payment = Payment(
+            user_id=user.id,
+            provider="yookassa",
+            provider_payment_id="pay_renew_active",
+            idempotency_key="idem_renew_active",
+            status="pending",
+            amount=Decimal("990.00"),
+            currency="RUB",
+            payment_metadata={
+                "user_id": user.id,
+                "telegram_id": user.telegram_id,
+                "product": "teleport_subscription",
+                "subscription_duration_days": 30,
+            },
+        )
+        session.add(payment)
+        await session.flush()
+        provider = ProviderPayment(
+            provider_payment_id=payment.provider_payment_id,
+            status="succeeded",
+            amount=Decimal("990.00"),
+            currency="RUB",
+            paid=True,
+            metadata=payment.payment_metadata,
+        )
+
+        await PaymentService(session, Settings(), FakeGateway()).apply_provider_status(
+            payment, provider
+        )
+
+        assert user.subscription is not None
+        assert user.subscription.status == "active"
+        assert user.subscription.expires_at == current_expiry + timedelta(days=30)
 
 
 def test_email_is_masked_in_safe_log_payload() -> None:

@@ -57,6 +57,7 @@ class FakeUser:
     funnel_status = ""
     onboarding_status = ""
     subscription = None
+    questionnaire = type("Questionnaire", (), {"status": QuestionnaireStatus.COMPLETED.value})()
 
 
 class FakeUserRepository:
@@ -278,6 +279,7 @@ async def test_payment_start_clearly_requests_email_as_chat_message(
 
     message = FakeMessage()
     callback = FakeCallback(message)
+    callback.data = "payment:renew"
     state = FakeState()
     await onboarding.payment_start(callback, object(), state, object(), Settings())
 

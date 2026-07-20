@@ -59,6 +59,10 @@ class UserRepository:
         user.email = email
         await self.session.flush()
 
+    async def all_telegram_ids(self) -> list[int]:
+        result = await self.session.scalars(select(User.telegram_id).order_by(User.id))
+        return list(result.all())
+
     async def upsert_from_telegram(self, tg_user: TelegramUserLike) -> tuple[User, bool]:
         if self.session.bind and self.session.bind.dialect.name != "postgresql":
             return await self._upsert_from_telegram_fallback(tg_user)
