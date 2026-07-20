@@ -41,6 +41,17 @@ class UserRepository:
             ),
         )
 
+    async def get_by_telegram_id_for_update(self, telegram_id: int) -> User | None:
+        return cast(
+            User | None,
+            await self.session.scalar(
+                select(User)
+                .options(selectinload(User.questionnaire), selectinload(User.subscription))
+                .where(User.telegram_id == telegram_id)
+                .with_for_update()
+            ),
+        )
+
     async def get_by_id(self, user_id: int) -> User | None:
         return cast(User | None, await self.session.get(User, user_id))
 

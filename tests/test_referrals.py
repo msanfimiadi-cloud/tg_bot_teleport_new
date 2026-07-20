@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from teleport_bot.db.base import Base
-from teleport_bot.models.db import Payment, Questionnaire, ReferralAttribution, User
+from teleport_bot.models.db import Partner, Payment, Questionnaire, ReferralAttribution, User
 from teleport_bot.models.enums import PaymentStatus, QuestionnaireStatus
 from teleport_bot.services.referrals import ReferralService, partner_link
 
@@ -55,6 +55,15 @@ async def test_admin_creates_partner_and_unique_link(session: AsyncSession) -> N
 
     bot.get_me = get_me
     assert await partner_link(bot, p) == f"https://t.me/TeleportBot?start=ref_{p.referral_code}"
+
+
+async def test_duplicate_partner_does_not_close_outer_transaction(session: AsyncSession) -> None:
+    svc = ReferralService(session)
+    await svc.create_partner(telegram_id=10, display_name="First", created_by_admin_id=1)
+    with pytest.raises(ValueError, match="partner_exists"):
+        await svc.create_partner(telegram_id=10, display_name="Duplicate", created_by_admin_id=1)
+    partners = (await session.scalars(select(Partner))).all()
+    assert len(partners) == 1
 
 
 async def test_start_valid_invalid_inactive_repeat_other_and_self(session: AsyncSession) -> None:

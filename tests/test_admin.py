@@ -7,7 +7,13 @@ from aiogram.enums import ChatType
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from teleport_bot.bot.handlers.admin import is_admin, render_chatid_response
+from teleport_bot.bot.handlers.admin import (
+    is_admin,
+    parse_expiration_date,
+    parse_positive_days,
+    parse_telegram_id,
+    render_chatid_response,
+)
 from teleport_bot.config.settings import Settings
 from teleport_bot.db.base import Base
 from teleport_bot.models.db import AdminActionLog, Subscription
@@ -55,6 +61,20 @@ def test_admin_access_by_telegram_id() -> None:
 def test_regular_user_access_denied_by_telegram_id() -> None:
     settings = Settings(admin_ids="10,20")
     assert is_admin(settings, 30) is False
+
+
+def test_admin_input_validation() -> None:
+    assert parse_telegram_id("123") == 123
+    assert parse_positive_days("30") == 30
+    assert parse_expiration_date("2026-08-01").tzinfo == UTC
+    for value in ("", "abc", "-1", "0"):
+        with pytest.raises(ValueError):
+            parse_telegram_id(value)
+    for value in ("0", "-10", "abc", "3651"):
+        with pytest.raises(ValueError):
+            parse_positive_days(value)
+    with pytest.raises(ValueError):
+        parse_expiration_date("not-a-date")
 
 
 async def test_create_subscription(session_factory: Any) -> None:

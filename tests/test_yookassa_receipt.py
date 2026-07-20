@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from teleport_bot.config.settings import Settings
 from teleport_bot.db.base import Base
+from teleport_bot.models.db import Payment
 from teleport_bot.models.enums import QuestionnaireStatus
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.payments import (
@@ -128,6 +129,42 @@ async def test_repeat_payment_uses_saved_email(session_factory: Any) -> None:
 
         assert payment.confirmation_url == "https://pay.example/1"
         assert gateway.calls[0]["customer_email"] == "saved@example.com"
+
+
+async def test_successful_payment_updates_loaded_user_subscription(session_factory: Any) -> None:
+    async with session_factory() as session, session.begin():
+        user, _ = await UserRepository(session).upsert_from_telegram(TgUser(12, "user", "A"))
+        user.questionnaire.status = QuestionnaireStatus.COMPLETED.value
+        payment = Payment(
+            user_id=user.id,
+            provider="yookassa",
+            provider_payment_id="pay_loaded_user",
+            idempotency_key="idem_loaded_user",
+            status="pending",
+            amount=Decimal("990.00"),
+            currency="RUB",
+            payment_metadata={
+                "user_id": user.id,
+                "telegram_id": user.telegram_id,
+                "product": "teleport_subscription",
+                "subscription_duration_days": 30,
+            },
+        )
+        session.add(payment)
+        await session.flush()
+        provider = ProviderPayment(
+            provider_payment_id=payment.provider_payment_id,
+            status="succeeded",
+            amount=Decimal("990.00"),
+            currency="RUB",
+            paid=True,
+            metadata=payment.payment_metadata,
+        )
+        await PaymentService(session, Settings(), FakeGateway()).apply_provider_status(
+            payment, provider
+        )
+        assert user.subscription is not None
+        assert user.subscription.status == "active"
 
 
 def test_email_is_masked_in_safe_log_payload() -> None:

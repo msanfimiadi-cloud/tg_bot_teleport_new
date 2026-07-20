@@ -8,6 +8,7 @@ from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import Questionnaire, User
 from teleport_bot.models.enums import EventType, QuestionnaireStatus
 from teleport_bot.services.admin_notifications import AdminNotifier
+from teleport_bot.services.formatting import escape_html
 
 logger = get_logger(__name__)
 
@@ -27,11 +28,13 @@ PUBLIC_WELCOME_TEXT = (
 def render_public_questionnaire(user: User, questionnaire: Questionnaire) -> str:
     return (
         "Новая анкета участника\n"
-        f"Telegram ID: {user.telegram_id}\nUsername: @{user.username or '-'}\n"
-        f"Имя: {user.first_name}\n"
-        f"1: {questionnaire.name_and_age}\n2: {questionnaire.what_annoys}\n"
-        f"3: {questionnaire.what_is_important}\n4: {questionnaire.self_definition}\n"
-        f"5: {questionnaire.intention}\nДата: {questionnaire.completed_at}"
+        f"Telegram ID: {user.telegram_id}\nUsername: @{escape_html(user.username or '-')}\n"
+        f"Имя: {escape_html(user.first_name)}\n"
+        f"1: {escape_html(questionnaire.name_and_age)}\n"
+        f"2: {escape_html(questionnaire.what_annoys)}\n"
+        f"3: {escape_html(questionnaire.what_is_important)}\n"
+        f"4: {escape_html(questionnaire.self_definition)}\n"
+        f"5: {escape_html(questionnaire.intention)}\nДата: {questionnaire.completed_at}"
     )
 
 

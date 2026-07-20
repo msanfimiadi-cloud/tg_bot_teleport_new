@@ -18,15 +18,18 @@ async def main() -> None:
     bot = create_bot(settings)
     dp = create_dispatcher(settings, session_factory)
 
-    runner = web.AppRunner(create_health_app(settings, session_factory, bot))
+    health_app = create_health_app(settings, session_factory, bot)
+    runner = web.AppRunner(health_app)
     await runner.setup()
     site = web.TCPSite(runner, settings.health_host, settings.health_port)
     await site.start()
     scheduler = create_scheduler(session_factory, bot)
     scheduler.start()
+    health_app["ready"] = True
     try:
         await dp.start_polling(bot)
     finally:
+        health_app["ready"] = False
         scheduler.shutdown(wait=False)
         await runner.cleanup()
         await bot.session.close()

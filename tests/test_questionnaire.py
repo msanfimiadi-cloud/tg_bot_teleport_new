@@ -29,6 +29,11 @@ def user() -> User:
     return u
 
 
+def fill_questionnaire(questionnaire: Questionnaire) -> None:
+    for question in QUESTIONS:
+        setattr(questionnaire, question.field, "Достаточно длинный ответ")
+
+
 def test_short_answer_rejected() -> None:
     with pytest.raises(ValidationError):
         validate_answer(QUESTIONS[0], " a ")
@@ -100,9 +105,28 @@ def test_restore_progress_after_long_pause_finds_first_unfinished_answer() -> No
 
 def test_confirm_questionnaire_idempotent() -> None:
     u = user()
+    fill_questionnaire(u.questionnaire)
     assert complete(u, u.questionnaire) is True
     assert complete(u, u.questionnaire) is False
     assert u.questionnaire.status == QuestionnaireStatus.COMPLETED.value
+
+
+def test_incomplete_questionnaire_cannot_be_confirmed() -> None:
+    u = user()
+    with pytest.raises(ValidationError):
+        complete(u, u.questionnaire)
+    assert u.questionnaire.status != QuestionnaireStatus.COMPLETED.value
+
+
+def test_questionnaire_summary_escapes_html() -> None:
+    from teleport_bot.services.questionnaire import render_summary
+
+    u = user()
+    fill_questionnaire(u.questionnaire)
+    u.questionnaire.what_annoys = "<script>alert('&')</script>"
+    summary = render_summary(u.questionnaire)
+    assert "<script>" not in summary
+    assert "&lt;script&gt;" in summary
 
 
 def test_missing_username_allowed() -> None:
@@ -154,6 +178,7 @@ async def test_successful_questionnaire_publication_sends_group_welcome() -> Non
     )
 
     u = user()
+    fill_questionnaire(u.questionnaire)
     complete(u, u.questionnaire)
     bot = FakeBot()
     sent = await publish_questionnaire_and_send_welcome(
@@ -193,6 +218,7 @@ async def test_repeat_chat_member_update_does_not_duplicate_welcome() -> None:
     from teleport_bot.services.public_welcome import publish_questionnaire_and_send_welcome
 
     u = user()
+    fill_questionnaire(u.questionnaire)
     complete(u, u.questionnaire)
     bot = FakeBot()
     settings = Settings(private_chat_id=-100, admin_ids="")
@@ -209,6 +235,7 @@ async def test_rejoin_does_not_duplicate_welcome() -> None:
     from teleport_bot.services.public_welcome import publish_questionnaire_and_send_welcome
 
     u = user()
+    fill_questionnaire(u.questionnaire)
     complete(u, u.questionnaire)
     bot = FakeBot()
     settings = Settings(private_chat_id=-100, admin_ids="")
@@ -226,6 +253,7 @@ async def test_telegram_api_error_does_not_set_welcome_timestamp() -> None:
     from teleport_bot.services.public_welcome import publish_questionnaire_and_send_welcome
 
     u = user()
+    fill_questionnaire(u.questionnaire)
     complete(u, u.questionnaire)
     bot = FakeBot(fail_on=2)
     events = FakeEvents()

@@ -1,3 +1,4 @@
+import hashlib
 import re
 import secrets
 from dataclasses import dataclass
@@ -24,6 +25,10 @@ _REF_RE = re.compile(r"^ref_([A-Za-z0-9_-]{8,64})$")
 
 def generate_referral_code() -> str:
     return secrets.token_urlsafe(18).rstrip("=")
+
+
+def referral_code_hash(code: str) -> str:
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 def parse_referral_payload(payload: str | None) -> str | None:
@@ -86,11 +91,11 @@ class ReferralService:
                 created_by_admin_id=created_by_admin_id,
                 note=note,
             )
-            self.session.add(partner)
             try:
-                await self.session.flush()
+                async with self.session.begin_nested():
+                    self.session.add(partner)
+                    await self.session.flush()
             except IntegrityError:
-                await self.session.rollback()
                 if await self.get_partner_by_telegram_id(telegram_id):
                     raise ValueError("partner_exists") from None
                 continue
@@ -145,11 +150,11 @@ class ReferralService:
             first_start_at=datetime.now(UTC),
             attribution_source=AttributionSource.DEEP_LINK.value,
         )
-        self.session.add(attr)
         try:
-            await self.session.flush()
+            async with self.session.begin_nested():
+                self.session.add(attr)
+                await self.session.flush()
         except IntegrityError:
-            await self.session.rollback()
             return cast(
                 ReferralAttribution | None,
                 await self.session.scalar(
@@ -159,7 +164,9 @@ class ReferralService:
                 ),
             )
         await self.events.add(
-            EventType.REFERRAL_ATTRIBUTED, user, {"partner_id": partner.id, "code_hash": hash(code)}
+            EventType.REFERRAL_ATTRIBUTED,
+            user,
+            {"partner_id": partner.id, "code_hash": referral_code_hash(code)},
         )
         return attr
 
@@ -179,7 +186,11 @@ class ReferralService:
         await self.events.add(
             EventType.REFERRAL_ATTRIBUTION_SKIPPED,
             user,
-            {"reason": reason, "partner_id": partner_id, "code_hash": hash(code) if code else None},
+            {
+                "reason": reason,
+                "partner_id": partner_id,
+                "code_hash": referral_code_hash(code) if code else None,
+            },
         )
 
     async def mark_questionnaire_completed(self, user: User) -> None:

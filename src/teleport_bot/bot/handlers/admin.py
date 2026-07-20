@@ -35,6 +35,7 @@ from teleport_bot.services.admin_chat_publisher import (
     AdminChatPublisherService,
     MessageValidationError,
 )
+from teleport_bot.services.formatting import escape_html
 from teleport_bot.services.questionnaire import QUESTIONS
 from teleport_bot.services.referrals import ReferralService, partner_link
 from teleport_bot.services.telegram import TelegramService
@@ -46,6 +47,36 @@ OPEN_PRIVATE_TEXT = "Чтобы открыть этот раздел, перей
 
 def is_admin(settings: Settings, telegram_id: int) -> bool:
     return telegram_id in settings.admin_telegram_ids
+
+
+def parse_telegram_id(value: str | None) -> int:
+    try:
+        telegram_id = int((value or "").strip())
+    except ValueError as exc:
+        raise ValueError("invalid_telegram_id") from exc
+    if telegram_id <= 0:
+        raise ValueError("invalid_telegram_id")
+    return telegram_id
+
+
+def parse_expiration_date(value: str | None) -> datetime:
+    try:
+        parsed = datetime.fromisoformat((value or "").strip())
+    except ValueError as exc:
+        raise ValueError("invalid_expiration_date") from exc
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def parse_positive_days(value: str | None) -> int:
+    try:
+        days = int((value or "").strip())
+    except ValueError as exc:
+        raise ValueError("invalid_days") from exc
+    if not 1 <= days <= 3650:
+        raise ValueError("invalid_days")
+    return days
 
 
 def chat_type_value(chat_type: object) -> str:
@@ -274,14 +305,14 @@ def render_questionnaire(q: Questionnaire) -> str:
     user = q.user
     lines = [
         f"Telegram ID: {user.telegram_id}",
-        f"username: @{user.username}" if user.username else "username: —",
-        f"имя Telegram: {user.first_name} {user.last_name or ''}".strip(),
+        f"username: @{escape_html(user.username)}" if user.username else "username: —",
+        f"имя Telegram: {escape_html(user.first_name)} {escape_html(user.last_name)}".strip(),
         f"дата заполнения: {q.completed_at or '—'}",
         "",
         "Ответы:",
     ]
     for question in QUESTIONS:
-        lines.append(f"{question.text}\n{getattr(q, question.field) or '—'}")
+        lines.append(f"{question.text}\n{escape_html(getattr(q, question.field) or '—')}")
     return "\n".join(lines)
 
 
@@ -307,8 +338,9 @@ async def new_questionnaires(
 def render_user(user: User) -> str:
     sub = user.subscription.status if user.subscription else "inactive"
     return (
-        f"Telegram ID: {user.telegram_id}\nusername: @{user.username if user.username else '—'}\n"
-        f"имя: {user.first_name} {user.last_name or ''}\nдата регистрации: {user.created_at}\n"
+        f"Telegram ID: {user.telegram_id}\nusername: @{escape_html(user.username or '—')}\n"
+        f"имя: {escape_html(user.first_name)} {escape_html(user.last_name)}\n"
+        f"дата регистрации: {user.created_at}\n"
         f"статус анкеты: {user.questionnaire.status if user.questionnaire else '—'}\n"
         f"статус подписки: {sub}\nпоследняя активность: {user.last_activity_at}"
     )
@@ -350,9 +382,9 @@ async def settings_view(callback: CallbackQuery, session: AsyncSession, settings
         "Настройки:\n"
         f"Количество администраторов: {len(settings.admin_telegram_ids)}\n"
         f"ID закрытого Telegram-чата: {settings.private_chat_id or 'не настроено'}\n"
-        f"Расписание круга: {effective['circle_schedule']}\n"
+        f"Расписание круга: {escape_html(effective['circle_schedule'])}\n"
         f"Длительность подписки: {effective['subscription_duration_days']} дней\n"
-        f"Ссылка на поддержку: {effective['support_url'] or 'не настроено'}\n"
+        f"Ссылка на поддержку: {escape_html(effective['support_url'] or 'не настроено')}\n"
         f"Стоимость подписки: {effective['subscription_price'] or 'не настроено'}\n\n"
         "Для изменения отправьте: /set_setting ключ значение",
         reply_markup=back_to_admin_menu(),
@@ -375,7 +407,7 @@ async def set_setting_command(message: Message, session: AsyncSession, settings:
     try:
         await SettingsRepository(session).set(parts[1], parts[2], message.from_user.id)
     except ValueError:
-        await message.answer("Эту настройку нельзя изменить.")
+        await message.answer("Некорректный ключ или значение настройки.")
         return
     await AdminLogRepository(session).add(
         message.from_user.id, AdminAction.SETTINGS_CHANGED, payload={"key": parts[1]}
@@ -401,7 +433,12 @@ async def activate_user_id(
     if message.from_user is None or not is_admin(settings, message.from_user.id):
         await deny(message, session, settings)
         return
-    await state.update_data(target_user_id=int(message.text or "0"))
+    try:
+        target_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
+    await state.update_data(target_user_id=target_id)
     await state.set_state(AdminStates.subscription_expires_at)
     await message.answer("Введите дату окончания подписки в формате YYYY-MM-DD.")
 
@@ -420,7 +457,14 @@ async def activate_save(
         await message.answer("Пользователь не найден.")
         await state.clear()
         return
-    expires_at = datetime.fromisoformat(message.text or "").replace(tzinfo=UTC)
+    try:
+        expires_at = parse_expiration_date(message.text)
+    except ValueError:
+        await message.answer("Неверная дата. Используйте формат YYYY-MM-DD.")
+        return
+    if expires_at <= datetime.now(UTC):
+        await message.answer("Дата окончания должна быть в будущем.")
+        return
     await SubscriptionRepository(session).activate_manual(user, expires_at, message.from_user.id)
     await AdminLogRepository(session).add(
         message.from_user.id,
@@ -450,7 +494,11 @@ async def send_link(
     if message.from_user is None or not is_admin(settings, message.from_user.id):
         await deny(message, session, settings)
         return
-    target_id = int(message.text or "0")
+    try:
+        target_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
     chat_id = settings.private_chat_id
     if not chat_id:
         await message.answer("ID закрытого чата не настроен.")
@@ -458,7 +506,10 @@ async def send_link(
         return
     try:
         result = await AccessService(session, TelegramService(bot)).send_manual_invite(
-            message.from_user.id, target_id, chat_id
+            message.from_user.id,
+            target_id,
+            chat_id,
+            invite_link_ttl_hours=settings.invite_link_ttl_hours,
         )
     except ValueError:
         await message.answer("Пользователь не найден.")
@@ -479,8 +530,8 @@ def render_subscription(sub: Subscription) -> str:
     user = sub.user
     days = "—" if not sub.expires_at else (sub.expires_at.date() - datetime.now(UTC).date()).days
     return (
-        f"Telegram ID: {user.telegram_id}\nusername: @{user.username if user.username else '—'}\n"
-        f"имя: {user.first_name} {user.last_name or ''}\nстатус: {sub.status}\n"
+        f"Telegram ID: {user.telegram_id}\nusername: @{escape_html(user.username or '—')}\n"
+        f"имя: {escape_html(user.first_name)} {escape_html(user.last_name)}\nстатус: {sub.status}\n"
         f"дата начала: {sub.started_at or '—'}\nдата окончания: {sub.expires_at or '—'}\n"
         f"дней осталось: {days}"
     )
@@ -516,7 +567,12 @@ async def import_user_id(
     if message.from_user is None or not is_admin(settings, message.from_user.id):
         await deny(message, session, settings)
         return
-    await state.update_data(target_user_id=int(message.text or "0"))
+    try:
+        target_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
+    await state.update_data(target_user_id=target_id)
     await state.set_state(AdminStates.import_expires_at)
     await message.answer("Введите дату окончания подписки в формате YYYY-MM-DD.")
 
@@ -543,7 +599,12 @@ async def import_save(
     from teleport_bot.services.subscriptions import ManualSubscriptionService
 
     data = await state.get_data()
-    expires_at = datetime.fromisoformat(data["expires_at"]).replace(tzinfo=UTC)
+    try:
+        expires_at = parse_expiration_date(str(data["expires_at"]))
+    except ValueError:
+        await message.answer("Неверная дата. Начните импорт заново.")
+        await state.clear()
+        return
     comment = None if message.text == "-" else message.text
     await ManualSubscriptionService(session).import_subscription(
         int(data["target_user_id"]), expires_at, message.from_user.id, comment
@@ -576,7 +637,12 @@ async def extend_user_id(
     if message.from_user is None or not is_admin(settings, message.from_user.id):
         await deny(message, session, settings)
         return
-    await state.update_data(target_user_id=int(message.text or "0"))
+    try:
+        target_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
+    await state.update_data(target_user_id=target_id)
     await state.set_state(AdminStates.extend_days)
     await message.answer("Введите количество дней.")
 
@@ -591,15 +657,25 @@ async def extend_save(
     from teleport_bot.services.subscriptions import ManualSubscriptionService
 
     data = await state.get_data()
-    sub = await ManualSubscriptionService(session).extend_manual(
-        int(data["target_user_id"]), int(message.text or "0"), message.from_user.id
-    )
+    try:
+        days = parse_positive_days(message.text)
+    except ValueError:
+        await message.answer("Количество дней должно быть целым числом от 1 до 3650.")
+        return
+    try:
+        sub = await ManualSubscriptionService(session).extend_manual(
+            int(data["target_user_id"]), days, message.from_user.id
+        )
+    except ValueError:
+        await message.answer("Подписка не найдена.")
+        await state.clear()
+        return
     await AdminLogRepository(session).add(
         message.from_user.id,
         AdminAction.SUBSCRIPTION_EXTENDED_MANUAL,
         int(data["target_user_id"]),
         {
-            "days": int(message.text or "0"),
+            "days": days,
             "expires_at": sub.expires_at.isoformat() if sub.expires_at else None,
         },
     )
@@ -627,8 +703,17 @@ async def cancel_save(
         return
     from teleport_bot.services.subscriptions import ManualSubscriptionService
 
-    target_id = int(message.text or "0")
-    await ManualSubscriptionService(session).cancel(target_id, message.from_user.id)
+    try:
+        target_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
+    try:
+        await ManualSubscriptionService(session).cancel(target_id, message.from_user.id)
+    except ValueError:
+        await message.answer("Подписка не найдена.")
+        await state.clear()
+        return
     await AdminLogRepository(session).add(
         message.from_user.id, AdminAction.SUBSCRIPTION_CANCELLED, target_id
     )
@@ -654,7 +739,11 @@ async def history_show(
     if message.from_user is None or not is_admin(settings, message.from_user.id):
         await deny(message, session, settings)
         return
-    target_id = int(message.text or "0")
+    try:
+        target_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
     history = await AdminRepository(session).user_history(target_id)
     if history is None:
         await message.answer("Пользователь не найден.")
@@ -674,7 +763,7 @@ async def history_show(
         f"Платежи: {len(payments)}\n"
         f"События: {len(events)}\n"
         f"Административные действия: {len(admin_logs)}\n"
-        f"Telegram username: @{user.username if user.username else '—'}"
+        f"Telegram username: @{escape_html(user.username or '—')}"
     )
     await state.clear()
     await message.answer(text, reply_markup=back_to_admin_menu())
@@ -706,10 +795,16 @@ async def partner_add_id(
     if message.from_user is None or not is_admin(settings, message.from_user.id):
         await deny(message, session, settings)
         return
-    await state.update_data(partner_telegram_id=int(message.text or "0"))
-    user = await UserRepository(session).get_by_telegram_id(int(message.text or "0"))
+    try:
+        partner_telegram_id = parse_telegram_id(message.text)
+    except ValueError:
+        await message.answer("Telegram ID должен быть положительным целым числом.")
+        return
+    await state.update_data(partner_telegram_id=partner_telegram_id)
+    user = await UserRepository(session).get_by_telegram_id(partner_telegram_id)
     suffix = (
-        f"\nНайден пользователь: @{user.username or '—'} {user.first_name}"
+        f"\nНайден пользователь: @{escape_html(user.username or '—')} "
+        f"{escape_html(user.first_name)}"
         if user
         else "\nПользователь ещё не запускал бота."
     )
@@ -761,9 +856,9 @@ async def partner_add_save(
             "\n".join(
                 [
                     "Партнёр создан",
-                    f"Имя: {partner.display_name}",
+                    f"Имя: {escape_html(partner.display_name)}",
                     f"Telegram ID: {partner.telegram_id}",
-                    f"username: @{partner.username or '—'}",
+                    f"username: @{escape_html(partner.username or '—')}",
                     f"Статус: {partner.status}",
                     f"Ссылка: {link}",
                     f"Дата: {partner.created_at}",
@@ -785,9 +880,9 @@ async def partners_list(callback: CallbackQuery, session: AsyncSession, settings
         "\n\n".join(
             "\n".join(
                 [
-                    f"#{p.id} {p.display_name}",
+                    f"#{p.id} {escape_html(p.display_name)}",
                     f"Telegram ID: {p.telegram_id}",
-                    f"username: @{p.username or '—'}",
+                    f"username: @{escape_html(p.username or '—')}",
                     f"статус: {p.status}",
                 ]
             )
@@ -815,7 +910,8 @@ async def partners_stats(
         lines.append(
             "\n".join(
                 [
-                    f"{p.display_name} ({p.telegram_id}, @{p.username or '—'}, {p.status})",
+                    f"{escape_html(p.display_name)} ({p.telegram_id}, "
+                    f"@{escape_html(p.username or '—')}, {p.status})",
                     f"переходы: {st.starts}; анкеты: {st.questionnaires}",
                     f"платёжные ссылки: {st.payment_links}; первые оплаты: {st.first_payments}",
                     f"конверсия переход → анкета: {st.start_to_questionnaire:.1f}%",

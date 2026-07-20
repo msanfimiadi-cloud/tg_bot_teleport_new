@@ -1,19 +1,35 @@
 from aiogram import Bot
 from aiohttp import web
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from structlog.stdlib import get_logger
 
 from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import User
 from teleport_bot.repositories.payments import PaymentRepository
-from teleport_bot.services.payments import PaymentService
+from teleport_bot.repositories.settings import SettingsRepository
+from teleport_bot.services.payments import PaymentService, PaymentValidationError
 from teleport_bot.services.yookassa import YooKassaGateway
 
 logger = get_logger(__name__)
 
 
-async def health(_: web.Request) -> web.Response:
-    return web.json_response({"status": "ok"})
+async def health(request: web.Request) -> web.Response:
+    if request.app.get("ready", True) is not True:
+        return web.json_response({"status": "unhealthy", "application": "not_ready"}, status=503)
+    bot: Bot | None = request.app.get("bot")
+    if bot is not None and bool(getattr(bot.session, "closed", False)):
+        return web.json_response({"status": "unhealthy", "telegram": "session_closed"}, status=503)
+    factory: async_sessionmaker[AsyncSession] | None = request.app.get("session_factory")
+    if factory is None:
+        return web.json_response({"status": "degraded", "database": "not_configured"}, status=503)
+    try:
+        async with factory() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("health_check_failed", dependency="database", error=type(exc).__name__)
+        return web.json_response({"status": "unhealthy", "database": "unavailable"}, status=503)
+    return web.json_response({"status": "ok", "database": "ok"})
 
 
 async def yookassa_webhook(request: web.Request) -> web.Response:
@@ -54,21 +70,28 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
     deliver_user_id: int | None = None
     async with factory() as session:
         async with session.begin():
+            runtime_settings = await SettingsRepository(session).resolved(settings)
             payment = await PaymentRepository(session).get_by_provider_id_for_update(
                 "yookassa", provider_payment_id
             )
             if payment is None:
-                logger.warning(
-                    "webhook processing stopped",
-                    reason="unknown_payment",
-                    provider_payment_id=provider_payment_id,
-                )
-                return web.json_response({"status": "unknown_payment"}, status=202)
-            service = PaymentService(session, settings, gateway)
+                try:
+                    payment = await PaymentService(
+                        session, runtime_settings, gateway
+                    ).recover_provider_payment(provider_payment)
+                except PaymentValidationError as exc:
+                    logger.warning(
+                        "webhook processing stopped",
+                        reason="unknown_payment",
+                        error=type(exc).__name__,
+                        provider_payment_id=provider_payment_id,
+                    )
+                    return web.json_response({"status": "unknown_payment"}, status=202)
+            service = PaymentService(session, runtime_settings, gateway)
             was_applied = payment.applied_to_subscription_at is not None
             try:
                 await service.apply_provider_status(payment, provider_payment)
-            except Exception as exc:
+            except PaymentValidationError as exc:
                 logger.warning(
                     "webhook processing stopped",
                     reason="validation_failed",
@@ -87,7 +110,7 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
                 applied_to_subscription=payment.applied_to_subscription_at is not None,
                 was_already_applied=was_applied,
             )
-            if payment.applied_to_subscription_at is not None and not was_applied:
+            if payment.applied_to_subscription_at is not None:
                 deliver_user_id = payment.user_id
                 logger.info(
                     "STEP 3 subscription activated",
@@ -116,9 +139,9 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
                     user_id=deliver_user_id,
                 )
             else:
-                await PaymentService(
-                    session, settings, gateway
-                ).deliver_access_after_commit(bot, user)
+                runtime_settings = await SettingsRepository(session).resolved(settings)
+                service = PaymentService(session, runtime_settings, gateway)
+                await service.deliver_access_after_commit(bot, user)
                 await session.commit()
     return web.json_response({"status": "ok"})
 
@@ -135,6 +158,7 @@ def create_health_app(
         app["session_factory"] = session_factory
     if bot is not None:
         app["bot"] = bot
+    app["ready"] = False
     app.router.add_get("/health", health)
     path = (
         settings.yookassa_webhook_path if settings is not None else "/webhooks/yookassa"

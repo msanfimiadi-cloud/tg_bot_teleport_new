@@ -3,8 +3,10 @@ from typing import Any
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy import exists, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from structlog.stdlib import get_logger
 
 from teleport_bot.models.db import Subscription, SubscriptionReminder, User
 from teleport_bot.models.enums import EventType, SubscriptionStatus
@@ -12,6 +14,7 @@ from teleport_bot.repositories.events import EventRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 
 REMINDER_DAYS = {3: "3_days", 1: "1_day", 0: "today"}
+logger = get_logger(__name__)
 
 
 def renew_keyboard() -> InlineKeyboardMarkup:
@@ -52,31 +55,56 @@ class SubscriptionLifecycleService:
             reminder_type = REMINDER_DAYS.get(days_left)
             if reminder_type is None:
                 continue
-            already = await self.session.scalar(
-                select(
-                    exists().where(
-                        SubscriptionReminder.subscription_id == sub.id,
-                        SubscriptionReminder.reminder_type == reminder_type,
-                    )
-                )
-            )
-            if already:
+            reminder = await self._claim_reminder(sub.id, reminder_type)
+            if reminder is None:
                 continue
-            await self.bot.send_message(
-                sub.user.telegram_id,
-                f"Твоя подписка заканчивается {sub.expires_at.date()}.\n\n"
-                "Чтобы не потерять доступ к Телепорту, продли подписку.",
-                reply_markup=renew_keyboard(),
-            )
-            self.session.add(
-                SubscriptionReminder(subscription_id=sub.id, reminder_type=reminder_type)
-            )
+            try:
+                await self.bot.send_message(
+                    sub.user.telegram_id,
+                    f"Твоя подписка заканчивается {sub.expires_at.date()}.\n\n"
+                    "Чтобы продлить участие, обнови подписку.",
+                    reply_markup=renew_keyboard(),
+                )
+            except Exception as exc:
+                await self.session.delete(reminder)
+                await self.session.flush()
+                logger.warning(
+                    "subscription_reminder_failed",
+                    subscription_id=sub.id,
+                    telegram_id=sub.user.telegram_id,
+                    error=type(exc).__name__,
+                )
+                continue
             await self.events.add(
                 EventType.SUBSCRIPTION_REMINDER_SENT,
                 sub.user,
                 {"subscription_id": sub.id, "reminder_type": reminder_type},
             )
             await self.session.flush()
+
+    async def _claim_reminder(
+        self, subscription_id: int, reminder_type: str
+    ) -> SubscriptionReminder | None:
+        already = await self.session.scalar(
+            select(
+                exists().where(
+                    SubscriptionReminder.subscription_id == subscription_id,
+                    SubscriptionReminder.reminder_type == reminder_type,
+                )
+            )
+        )
+        if already:
+            return None
+        reminder = SubscriptionReminder(
+            subscription_id=subscription_id, reminder_type=reminder_type
+        )
+        try:
+            async with self.session.begin_nested():
+                self.session.add(reminder)
+                await self.session.flush()
+        except IntegrityError:
+            return None
+        return reminder
 
     async def expire_overdue(self, now: datetime) -> None:
         rows = await self.session.scalars(
@@ -90,14 +118,23 @@ class SubscriptionLifecycleService:
                 Subscription.expires_at.is_not(None),
                 Subscription.expires_at < now,
             )
+            .with_for_update(skip_locked=True)
         )
         for sub in rows:
             sub.status = SubscriptionStatus.EXPIRED.value
-            await self.bot.send_message(
-                sub.user.telegram_id,
-                "Подписка закончилась.\n\nТы всегда можешь вернуться ❤️",
-                reply_markup=renew_keyboard(),
-            )
+            try:
+                await self.bot.send_message(
+                    sub.user.telegram_id,
+                    "Подписка закончилась.\n\nТы всегда можешь вернуться ❤️",
+                    reply_markup=renew_keyboard(),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "subscription_expiration_notification_failed",
+                    subscription_id=sub.id,
+                    telegram_id=sub.user.telegram_id,
+                    error=type(exc).__name__,
+                )
             await self.events.add(
                 EventType.SUBSCRIPTION_EXPIRED, sub.user, {"subscription_id": sub.id}
             )
@@ -149,6 +186,7 @@ class ManualSubscriptionService:
             base = datetime.now(UTC)
         user.subscription.expires_at = base + timedelta(days=days)
         user.subscription.status = SubscriptionStatus.MANUAL.value
+        await SubscriptionRepository(self.session).reset_reminders(user.subscription)
         await self.events.add(
             EventType.SUBSCRIPTION_EXTENDED_MANUAL,
             user,

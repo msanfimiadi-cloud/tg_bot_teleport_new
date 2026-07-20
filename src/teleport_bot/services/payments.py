@@ -78,7 +78,7 @@ class PaymentService:
         self.events = EventRepository(session)
 
     async def create_or_reuse_payment(self, telegram_id: int) -> Payment:
-        user = await UserRepository(self.session).get_by_telegram_id(telegram_id)
+        user = await UserRepository(self.session).get_by_telegram_id_for_update(telegram_id)
         if user is None:
             raise PaymentError("user_not_found")
         if user.questionnaire.status != QuestionnaireStatus.COMPLETED.value:
@@ -98,6 +98,8 @@ class PaymentService:
             "user_id": user.id,
             "telegram_id": user.telegram_id,
             "product": PRODUCT,
+            "idempotency_key": key,
+            "subscription_duration_days": self.settings.subscription_duration_days,
         }
         provider = await self.gateway.create_payment(
             idempotency_key=key, metadata=metadata, customer_email=user.email
@@ -125,6 +127,50 @@ class PaymentService:
             {
                 "payment_id": payment.id,
                 "provider_payment_id": payment.provider_payment_id,
+            },
+        )
+        return payment
+
+    async def recover_provider_payment(self, provider: ProviderPayment) -> Payment:
+        """Recover a YooKassa payment created before a failed local DB commit."""
+        metadata = provider.metadata or {}
+        try:
+            user_id = int(metadata["user_id"])
+            telegram_id = int(metadata["telegram_id"])
+            idempotency_key = str(metadata["idempotency_key"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise PaymentValidationError("recovery_metadata") from exc
+        if metadata.get("product") != PRODUCT or not idempotency_key:
+            raise PaymentValidationError("recovery_metadata")
+        user = await UserRepository(self.session).get_by_telegram_id_for_update(telegram_id)
+        if (
+            user is None
+            or user.id != user_id
+            or user.questionnaire.status != QuestionnaireStatus.COMPLETED.value
+        ):
+            raise PaymentValidationError("recovery_user")
+        payment = Payment(
+            user_id=user.id,
+            provider=PROVIDER,
+            provider_payment_id=provider.provider_payment_id,
+            idempotency_key=idempotency_key,
+            status=provider.status,
+            amount=provider.amount,
+            currency=provider.currency,
+            confirmation_url=provider.confirmation_url,
+            description=self.settings.subscription_description,
+            payment_metadata=dict(metadata),
+            expires_at=datetime.now(UTC)
+            + timedelta(minutes=self.settings.payment_pending_ttl_minutes),
+        )
+        await self.payments.add(payment)
+        await self.events.add(
+            EventType.PAYMENT_CREATED,
+            user,
+            {
+                "payment_id": payment.id,
+                "provider_payment_id": payment.provider_payment_id,
+                "recovered": True,
             },
         )
         return payment
@@ -220,6 +266,7 @@ class PaymentService:
         ):
             now = sub.expires_at
             event = EventType.SUBSCRIPTION_EXTENDED
+        user.subscription = sub
         sub.status = SubscriptionStatus.ACTIVE.value
         sub.activation_source = ActivationSource.YOOKASSA.value
         sub.payment_provider = PROVIDER
@@ -229,7 +276,18 @@ class PaymentService:
             if event == EventType.SUBSCRIPTION_ACTIVATED
             else sub.started_at
         )
-        sub.expires_at = now + timedelta(days=self.settings.subscription_duration_days)
+        try:
+            duration_days = int(
+                payment.payment_metadata.get(
+                    "subscription_duration_days", self.settings.subscription_duration_days
+                )
+            )
+        except (TypeError, ValueError):
+            duration_days = self.settings.subscription_duration_days
+        if not 1 <= duration_days <= 3650:
+            raise PaymentValidationError("subscription_duration_days")
+        sub.expires_at = now + timedelta(days=duration_days)
+        await repo.reset_reminders(sub)
         sub.last_payment = payment
         payment.applied_to_subscription_at = datetime.now(UTC)
         if provider.payment_method_saved and provider.payment_method_id:
@@ -255,7 +313,7 @@ class PaymentService:
     def _is_expired(self, payment: Payment) -> bool:
         return bool(payment.expires_at and payment.expires_at <= datetime.now(UTC))
 
-    async def deliver_access_after_commit(self, bot: Bot, user: User) -> None:
+    async def deliver_access_after_commit(self, bot: Bot, user: User) -> bool:
         try:
             if self.settings.private_chat_id is None:
                 logger.warning(
@@ -273,7 +331,11 @@ class PaymentService:
             )
             result = await AccessService(
                 self.session, TelegramService(bot)
-            ).send_paid_invite(user.telegram_id, self.settings.private_chat_id)
+            ).send_paid_invite(
+                user.telegram_id,
+                self.settings.private_chat_id,
+                invite_link_ttl_hours=self.settings.invite_link_ttl_hours,
+            )
             await self.events.add(
                 (
                     EventType.ACCESS_ALREADY_PRESENT
@@ -290,6 +352,7 @@ class PaymentService:
                 already_member=result.already_member,
                 invite_created=result.invite_link is not None,
             )
+            return True
         except Exception as exc:
             logger.warning(
                 "access delivery stopped",
@@ -307,7 +370,8 @@ class PaymentService:
                 bot, self.settings.admin_telegram_ids, self.events
             )._send(f"Не удалось выдать доступ после оплаты: {user.telegram_id}", user)
             if isinstance(exc, TelegramAPIError):
-                return
+                return False
+            return False
 
 
 class RecurringPaymentService:

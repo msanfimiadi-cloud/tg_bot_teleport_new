@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from aiogram import Bot
@@ -24,7 +25,11 @@ class TelegramService:
         return await self.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML)
 
     async def send_single_use_invite(
-        self, chat_id: int | str, user_telegram_id: int
+        self,
+        chat_id: int | str,
+        user_telegram_id: int,
+        *,
+        invite_link_ttl_hours: int | None = None,
     ) -> InviteLinkResult:
         member = await self.bot.get_chat_member(chat_id, user_telegram_id)
         if member.status in {"member", "administrator", "creator"}:
@@ -42,7 +47,14 @@ class TelegramService:
             telegram_id=user_telegram_id,
         )
         try:
-            link = await self.bot.create_chat_invite_link(chat_id, member_limit=1)
+            expire_date = (
+                datetime.now(UTC) + timedelta(hours=invite_link_ttl_hours)
+                if invite_link_ttl_hours is not None and invite_link_ttl_hours > 0
+                else None
+            )
+            link = await self.bot.create_chat_invite_link(
+                chat_id, member_limit=1, expire_date=expire_date
+            )
         except TelegramBadRequest as exc:
             logger.warning(
                 "access delivery stopped",

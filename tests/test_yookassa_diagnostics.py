@@ -7,7 +7,9 @@ import pytest
 from aiohttp import ClientResponse
 
 from teleport_bot.bot.handlers import onboarding
+from teleport_bot.bot.states import OnboardingStates
 from teleport_bot.config.settings import Settings
+from teleport_bot.models.enums import OnboardingStatus, QuestionnaireStatus
 from teleport_bot.services.yookassa import YooKassaGateway, YooKassaRequestError
 
 
@@ -29,9 +31,11 @@ class FakeResponse:
 class FakeMessage:
     def __init__(self) -> None:
         self.answers: list[str] = []
+        self.answer_kwargs: list[dict[str, Any]] = []
 
-    async def answer(self, text: str, **_: Any) -> None:
+    async def answer(self, text: str, **kwargs: Any) -> None:
         self.answers.append(text)
+        self.answer_kwargs.append(kwargs)
 
 
 class FakeCallback:
@@ -49,7 +53,7 @@ class FakeCallback:
 class FakeUser:
     id = 1
     telegram_id = 12345
-    email = "saved@example.com"
+    email: str | None = "saved@example.com"
     funnel_status = ""
     onboarding_status = ""
     subscription = None
@@ -212,6 +216,15 @@ async def test_payment_start_uses_neutral_user_message_and_safe_admin_notificati
     monkeypatch.setattr(onboarding, "AdminNotifier", FakeAdminNotifier)
     monkeypatch.setattr(onboarding, "callback_message", lambda callback: callback.message)
 
+    class FakeSettingsRepository:
+        def __init__(self, session: object) -> None:
+            pass
+
+        async def resolved(self, settings: Settings) -> Settings:
+            return settings
+
+    monkeypatch.setattr(onboarding, "SettingsRepository", FakeSettingsRepository)
+
     message = FakeMessage()
     callback = FakeCallback(message)
     settings = Settings(
@@ -232,3 +245,77 @@ async def test_payment_start_uses_neutral_user_message_and_safe_admin_notificati
     assert "amount.value" in admin_text
     assert "secret-value" not in admin_text
     assert "bot-token-value" not in admin_text
+
+
+async def test_payment_start_clearly_requests_email_as_chat_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UserWithoutEmail(FakeUser):
+        email = None
+
+    class UserRepositoryWithoutEmail(FakeUserRepository):
+        async def get_by_telegram_id(self, _: int) -> UserWithoutEmail:
+            return UserWithoutEmail()
+
+    class FakeState:
+        value: Any = None
+
+        async def set_state(self, value: Any) -> None:
+            self.value = value
+
+    class FakeSettingsRepository:
+        def __init__(self, session: object) -> None:
+            pass
+
+        async def resolved(self, settings: Settings) -> Settings:
+            return settings
+
+    monkeypatch.setattr(onboarding, "UserRepository", UserRepositoryWithoutEmail)
+    monkeypatch.setattr(onboarding, "EventRepository", FakeEventRepository)
+    monkeypatch.setattr(onboarding, "AdminNotifier", FakeAdminNotifier)
+    monkeypatch.setattr(onboarding, "SettingsRepository", FakeSettingsRepository)
+    monkeypatch.setattr(onboarding, "callback_message", lambda callback: callback.message)
+
+    message = FakeMessage()
+    callback = FakeCallback(message)
+    state = FakeState()
+    await onboarding.payment_start(callback, object(), state, object(), Settings())
+
+    assert "Отправь адрес следующим сообщением" in message.answers[0]
+    assert "кнопка «ОПЛАТИТЬ»" in message.answers[0]
+    assert "Письмо на email не отправляется" in message.answers[0]
+    assert message.answer_kwargs[0].get("reply_markup") is None
+    assert state.value == OnboardingStates.payment_email
+
+
+async def test_lost_payment_email_state_is_recovered_from_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user: Any = FakeUser()
+    user.email = None
+    user.onboarding_status = OnboardingStatus.PAYMENT_STAGE.value
+    user.questionnaire = type(
+        "Questionnaire", (), {"status": QuestionnaireStatus.COMPLETED.value}
+    )()
+    calls: list[Any] = []
+
+    async def fake_get_current_user(session: Any, message: Any) -> tuple[Any, bool]:
+        return user, False
+
+    async def fake_payment_email(*args: Any) -> None:
+        calls.append(args)
+
+    class EmptyState:
+        async def get_state(self) -> None:
+            return None
+
+    monkeypatch.setattr(onboarding, "get_current_user", fake_get_current_user)
+    monkeypatch.setattr(onboarding, "payment_email", fake_payment_email)
+
+    message = FakeMessage()
+    await onboarding.recover_unfinished_input(
+        message, object(), EmptyState(), object(), Settings()
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0] is message

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -26,7 +27,11 @@ class TgUser:
 
 class FakeTelegramService:
     async def send_single_use_invite(
-        self, chat_id: int | str, user_telegram_id: int
+        self,
+        chat_id: int | str,
+        user_telegram_id: int,
+        *,
+        invite_link_ttl_hours: int | None = None,
     ) -> InviteLinkResult:
         return InviteLinkResult(
             sent=True,
@@ -73,3 +78,27 @@ async def test_manual_invite_logs_after_success_inside_open_transaction(
         assert row.target_user_id == 12345
         assert row.payload["invite_link_sha256"]
         assert "invite_link" not in row.payload
+
+
+async def test_invite_link_uses_configured_ttl() -> None:
+    class FakeBot:
+        expire_date: datetime | None = None
+
+        async def get_chat_member(self, chat_id: int, user_id: int) -> object:
+            return SimpleNamespace(status="left")
+
+        async def create_chat_invite_link(self, chat_id: int, **kwargs: object) -> object:
+            self.expire_date = cast(datetime, kwargs.get("expire_date"))
+            return SimpleNamespace(invite_link="https://t.me/+temporary")
+
+        async def send_message(self, chat_id: int, text: str) -> None:
+            return None
+
+    bot = FakeBot()
+    before = datetime.now(UTC) + timedelta(hours=23, minutes=59)
+    await TelegramService(cast(Any, bot)).send_single_use_invite(
+        -100, 12345, invite_link_ttl_hours=24
+    )
+    after = datetime.now(UTC) + timedelta(hours=24, minutes=1)
+    assert bot.expire_date is not None
+    assert before <= bot.expire_date <= after

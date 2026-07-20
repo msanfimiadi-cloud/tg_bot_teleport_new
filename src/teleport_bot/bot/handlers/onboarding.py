@@ -19,16 +19,18 @@ from teleport_bot.bot.keyboards.onboarding import (
     edit_questions,
     one_button,
     payment_keyboard,
-    request_email_keyboard,
 )
 from teleport_bot.bot.states import OnboardingStates
 from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import User
 from teleport_bot.models.enums import EventType, FunnelStatus, OnboardingStatus, QuestionnaireStatus
 from teleport_bot.repositories.events import EventRepository
+from teleport_bot.repositories.settings import SettingsRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
 from teleport_bot.repositories.users import UserRepository
+from teleport_bot.services.access import AccessService
 from teleport_bot.services.admin_notifications import AdminNotifier
+from teleport_bot.services.formatting import escape_html
 from teleport_bot.services.payments import (
     PaymentError,
     PaymentService,
@@ -47,6 +49,7 @@ from teleport_bot.services.questionnaire import (
     validate_answer,
 )
 from teleport_bot.services.referrals import ReferralService
+from teleport_bot.services.telegram import TelegramService
 from teleport_bot.services.yookassa import YooKassaGateway, YooKassaRequestError
 from teleport_bot.texts import content
 
@@ -109,7 +112,7 @@ async def ask_question(
     await state.update_data(step=step)
     question = get_question(step)
     old = getattr(qn, question.field) or ""
-    suffix = f"\n\nРанее: {old}" if old else ""
+    suffix = f"\n\nРанее: {escape_html(old)}" if old else ""
     await message.answer(
         f"{progress_text(step)}\n\n{question.text}{suffix}", reply_markup=back_keyboard()
     )
@@ -258,18 +261,6 @@ async def answer_question(message: Message, session: AsyncSession, state: FSMCon
     await _save_questionnaire_answer(message, session, state)
 
 
-@router.message(F.text, F.chat.type == ChatType.PRIVATE)
-async def recover_questionnaire_answer(
-    message: Message, session: AsyncSession, state: FSMContext
-) -> None:
-    if await state.get_state() is not None:
-        return
-    user, _ = await get_current_user(session, message)
-    if user.questionnaire.status != QuestionnaireStatus.IN_PROGRESS.value:
-        return
-    await _save_questionnaire_answer(message, session, state, restore_from_db=True)
-
-
 @router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "questionnaire:back")
 async def back(callback: CallbackQuery, session: AsyncSession, state: FSMContext) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
@@ -310,7 +301,14 @@ async def confirm(
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user and (message := callback_message(callback)):
-        changed = complete(user, user.questionnaire)
+        try:
+            changed = complete(user, user.questionnaire)
+        except ValidationError as exc:
+            await message.answer(
+                str(exc), reply_markup=one_button("ПРОДОЛЖИТЬ", "questionnaire:continue")
+            )
+            await callback.answer()
+            return
         if changed:
             events = EventRepository(session)
             await events.add(EventType.QUESTIONNAIRE_COMPLETED, user)
@@ -318,8 +316,11 @@ async def confirm(
             await AdminNotifier(bot, settings.admin_telegram_ids, events).questionnaire_completed(
                 user, user.questionnaire
             )
+        runtime_settings = await SettingsRepository(session).resolved(settings)
         await message.answer(
-            content.CIRCLE_TEMPLATE.format(circle_schedule=settings.circle_schedule),
+            content.CIRCLE_TEMPLATE.format(
+                circle_schedule=escape_html(runtime_settings.circle_schedule)
+            ),
             reply_markup=one_button("ДАЛЬШЕ", "onboarding:final"),
         )
     await callback.answer()
@@ -349,10 +350,13 @@ async def private_chat_member_updated(
 
 
 @router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "onboarding:circle")
-async def circle(callback: CallbackQuery, settings: Settings) -> None:
+async def circle(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
     if message := callback_message(callback):
+        runtime_settings = await SettingsRepository(session).resolved(settings)
         await message.answer(
-            content.CIRCLE_TEMPLATE.format(circle_schedule=settings.circle_schedule),
+            content.CIRCLE_TEMPLATE.format(
+                circle_schedule=escape_html(runtime_settings.circle_schedule)
+            ),
             reply_markup=one_button("ДАЛЬШЕ", "onboarding:final"),
         )
     await callback.answer()
@@ -376,6 +380,7 @@ async def payment_start(
 ) -> None:
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user and (message := callback_message(callback)):
+        runtime_settings = await SettingsRepository(session).resolved(settings)
         user.funnel_status = FunnelStatus.PAYMENT_STAGE_REACHED.value
         user.onboarding_status = OnboardingStatus.PAYMENT_STAGE.value
         events = EventRepository(session)
@@ -396,15 +401,16 @@ async def payment_start(
             if not user.email:
                 await state.set_state(OnboardingStates.payment_email)
                 await message.answer(
-                    "Для фискального чека нужен email. "
-                    "Укажи email, и я сразу продолжу создание платежа.",
-                    reply_markup=request_email_keyboard(),
+                    "Для фискального чека нужен email.\n\n"
+                    "Отправь адрес следующим сообщением в этот чат, например: "
+                    "name@example.com. После этого здесь появится кнопка «ОПЛАТИТЬ». "
+                    "Письмо на email не отправляется.",
                 )
                 await callback.answer()
                 return
             try:
                 payment = await PaymentService(
-                    session, settings, YooKassaGateway(settings)
+                    session, runtime_settings, YooKassaGateway(runtime_settings)
                 ).create_or_reuse_payment(callback.from_user.id)
                 await ReferralService(session).mark_payment_link_created(user)
             except YooKassaRequestError as exc:
@@ -426,10 +432,10 @@ async def payment_start(
                 await message.answer(
                     "Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
                     f"Стоимость: {payment.amount} {payment.currency}\n"
-                    f"Срок: {settings.subscription_duration_days} дней\n"
-                    f"{settings.subscription_description}",
+                    f"Срок: {runtime_settings.subscription_duration_days} дней\n"
+                    f"{runtime_settings.subscription_description}",
                     reply_markup=payment_keyboard(
-                        payment.confirmation_url or settings.yookassa_return_url
+                        payment.confirmation_url or runtime_settings.yookassa_return_url
                     ),
                 )
     await callback.answer()
@@ -444,16 +450,17 @@ async def payment_email(
         email = normalize_email(message.text or "")
     except PaymentError:
         await message.answer(
-            "Похоже, email указан неверно. Проверь адрес и отправь его ещё раз.",
-            reply_markup=request_email_keyboard(),
+            "Похоже, email указан неверно. Проверь адрес и отправь его ещё раз "
+            "обычным сообщением, например: name@example.com.",
         )
         return
     await UserRepository(session).set_email(user, email)
     await state.clear()
     events = EventRepository(session)
+    runtime_settings = await SettingsRepository(session).resolved(settings)
     try:
         payment = await PaymentService(
-            session, settings, YooKassaGateway(settings)
+            session, runtime_settings, YooKassaGateway(runtime_settings)
         ).create_or_reuse_payment(user.telegram_id)
         await ReferralService(session).mark_payment_link_created(user)
     except YooKassaRequestError as exc:
@@ -469,19 +476,45 @@ async def payment_email(
         await message.answer(
             "Email сохранён. Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
             f"Стоимость: {payment.amount} {payment.currency}\n"
-            f"Срок: {settings.subscription_duration_days} дней\n"
-            f"{settings.subscription_description}",
-            reply_markup=payment_keyboard(payment.confirmation_url or settings.yookassa_return_url),
+            f"Срок: {runtime_settings.subscription_duration_days} дней\n"
+            f"{runtime_settings.subscription_description}",
+            reply_markup=payment_keyboard(
+                payment.confirmation_url or runtime_settings.yookassa_return_url
+            ),
         )
 
 
+@router.message(F.text, F.chat.type == ChatType.PRIVATE)
+async def recover_unfinished_input(
+    message: Message,
+    session: AsyncSession,
+    state: FSMContext,
+    bot: Bot,
+    settings: Settings,
+) -> None:
+    """Recover DB-backed input flows after an in-memory FSM state is lost."""
+    if await state.get_state() is not None:
+        return
+    user, _ = await get_current_user(session, message)
+    if user.questionnaire.status == QuestionnaireStatus.IN_PROGRESS.value:
+        await _save_questionnaire_answer(message, session, state, restore_from_db=True)
+        return
+    if (
+        user.onboarding_status == OnboardingStatus.PAYMENT_STAGE.value
+        and not user.email
+    ):
+        await payment_email(message, session, state, bot, settings)
+
+
 @router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "payment:check")
-async def payment_check(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
+async def payment_check(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, bot: Bot
+) -> None:
     if message := callback_message(callback):
+        runtime_settings = await SettingsRepository(session).resolved(settings)
+        service = PaymentService(session, runtime_settings, YooKassaGateway(runtime_settings))
         try:
-            payment = await PaymentService(
-                session, settings, YooKassaGateway(settings)
-            ).check_latest_payment(callback.from_user.id)
+            payment = await service.check_latest_payment(callback.from_user.id)
         except Exception as exc:
             await message.answer(
                 f"Оплата пока не подтверждена или недоступна проверка: {exc.__class__.__name__}"
@@ -490,9 +523,21 @@ async def payment_check(callback: CallbackQuery, session: AsyncSession, settings
             if payment is None:
                 await message.answer("Актуальный платёж не найден. Создай новую оплату.")
             elif payment.status == "succeeded":
-                await message.answer(
-                    "Оплата подтверждена. Подписка активирована, доступ будет выдан автоматически."
+                user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+                delivered = (
+                    await service.deliver_access_after_commit(bot, user)
+                    if user is not None
+                    else False
                 )
+                text = (
+                    "Оплата подтверждена. Подписка активирована, доступ выдан."
+                    if delivered
+                    else (
+                        "Оплата подтверждена. Подписка активирована, но ссылку отправить "
+                        "не удалось. Нажми «Проверить оплату» ещё раз или обратись в поддержку."
+                    )
+                )
+                await message.answer(text)
             elif payment.status == "canceled":
                 await message.answer("Платёж отменён. Можно создать новую оплату.")
             else:
@@ -501,9 +546,36 @@ async def payment_check(callback: CallbackQuery, session: AsyncSession, settings
 
 
 @router.callback_query(F.message.chat.type == ChatType.PRIVATE, F.data == "payment:get_invite")
-async def payment_get_invite(callback: CallbackQuery) -> None:
+async def payment_get_invite(
+    callback: CallbackQuery, session: AsyncSession, settings: Settings, bot: Bot
+) -> None:
     if message := callback_message(callback):
-        await message.answer(
-            "Запрос ссылки доступен через администраторскую выдачу или после подтверждения оплаты."
-        )
+        runtime_settings = await SettingsRepository(session).resolved(settings)
+        user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+        if user is None or not SubscriptionRepository.is_active(user.subscription):
+            await message.answer("Подписка неактивна.")
+        elif runtime_settings.private_chat_id is None:
+            await message.answer("Закрытый чат пока не настроен. Обратись в поддержку.")
+        else:
+            try:
+                result = await AccessService(session, TelegramService(bot)).send_paid_invite(
+                    user.telegram_id,
+                    runtime_settings.private_chat_id,
+                    invite_link_ttl_hours=runtime_settings.invite_link_ttl_hours,
+                )
+            except Exception:
+                support = (
+                    f" Поддержка: {runtime_settings.support_url}"
+                    if runtime_settings.support_url
+                    else ""
+                )
+                await message.answer(
+                    "Не удалось отправить ссылку. Попробуй ещё раз позже." + support
+                )
+            else:
+                await message.answer(
+                    "Ты уже состоишь в закрытом чате."
+                    if result.already_member
+                    else "Новая ссылка отправлена отдельным сообщением."
+                )
     await callback.answer()

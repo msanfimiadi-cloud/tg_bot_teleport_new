@@ -1,10 +1,10 @@
 from datetime import UTC, datetime
 from typing import cast
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from teleport_bot.models.db import Subscription, User
+from teleport_bot.models.db import Subscription, SubscriptionReminder, User
 from teleport_bot.models.enums import ActivationSource, SubscriptionStatus
 
 
@@ -33,7 +33,8 @@ class SubscriptionRepository:
         activated_by: int | None = None,
         activation_source: str = ActivationSource.MANUAL.value,
     ) -> Subscription:
-        subscription = await self.get_for_user_id(user.id)
+        subscription = await self.get_for_user_id_for_update(user.id)
+        previous_expires_at = subscription.expires_at if subscription is not None else None
         now = datetime.now(UTC)
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=UTC)
@@ -55,7 +56,18 @@ class SubscriptionRepository:
             subscription.activation_source = activation_source
         user.subscription = subscription
         await self.session.flush()
+        if previous_expires_at != expires_at:
+            await self.reset_reminders(subscription)
         return subscription
+
+    async def reset_reminders(self, subscription: Subscription) -> None:
+        if subscription.id is None:
+            return
+        await self.session.execute(
+            delete(SubscriptionReminder).where(
+                SubscriptionReminder.subscription_id == subscription.id
+            )
+        )
 
     @staticmethod
     def is_active(subscription: Subscription | None) -> bool:

@@ -20,6 +20,8 @@ class AccessService:
         self,
         target_telegram_id: int,
         private_chat_id: int | str,
+        *,
+        invite_link_ttl_hours: int | None = None,
     ) -> InviteLinkResult:
         user = await UserRepository(self.session).get_by_telegram_id(target_telegram_id)
         if user is None:
@@ -57,7 +59,9 @@ class AccessService:
             ),
         )
         return await self.telegram.send_single_use_invite(
-            private_chat_id, target_telegram_id
+            private_chat_id,
+            target_telegram_id,
+            invite_link_ttl_hours=invite_link_ttl_hours,
         )
 
     async def send_manual_invite(
@@ -65,6 +69,8 @@ class AccessService:
         admin_id: int,
         target_telegram_id: int,
         private_chat_id: int | str,
+        *,
+        invite_link_ttl_hours: int | None = None,
     ) -> InviteLinkResult:
         user = await UserRepository(self.session).get_by_telegram_id(target_telegram_id)
         if user is None:
@@ -73,7 +79,9 @@ class AccessService:
             raise PermissionError("subscription_inactive")
         try:
             result = await self.telegram.send_single_use_invite(
-                private_chat_id, target_telegram_id
+                private_chat_id,
+                target_telegram_id,
+                invite_link_ttl_hours=invite_link_ttl_hours,
             )
         except TelegramAPIError as exc:
             await AdminLogRepository(self.session).add(

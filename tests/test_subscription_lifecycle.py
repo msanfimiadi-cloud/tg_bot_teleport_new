@@ -37,6 +37,18 @@ class MockBot:
         self.messages.append((chat_id, text))
 
 
+class FirstMessageFailsBot(MockBot):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    async def send_message(self, chat_id: int, text: str, **kwargs: object) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("blocked")
+        await super().send_message(chat_id, text, **kwargs)
+
+
 @pytest.fixture
 async def session_factory() -> Any:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -46,9 +58,13 @@ async def session_factory() -> Any:
     await engine.dispose()
 
 
-async def make_subscription(session: Any, days: int) -> Any:
-    user, _ = await UserRepository(session).upsert_from_telegram(TgUser(100 + days, "u", "User"))
-    expires = datetime(2026, 7, 14, 12, tzinfo=UTC) + timedelta(days=days)
+async def make_subscription(
+    session: Any, days: int, base: datetime | None = None, telegram_id: int | None = None
+) -> Any:
+    user, _ = await UserRepository(session).upsert_from_telegram(
+        TgUser(telegram_id or 100 + days, "u", "User")
+    )
+    expires = (base or datetime(2026, 7, 14, 12, tzinfo=UTC)) + timedelta(days=days)
     sub = await SubscriptionRepository(session).activate_manual(user, expires, 10)
     return user, sub
 
@@ -81,6 +97,32 @@ async def test_subscription_reminder_not_duplicated(session_factory: Any) -> Non
         assert [e.event_type for e in events].count(EventType.SUBSCRIPTION_REMINDER_SENT.value) == 1
 
 
+async def test_renewal_resets_reminder_cycle(session_factory: Any) -> None:
+    async with session_factory() as session, session.begin():
+        user, _ = await make_subscription(session, 3)
+        service = SubscriptionLifecycleService(session, MockBot())
+        await service.send_due_reminders(datetime(2026, 7, 14, 9, tzinfo=UTC))
+        assert len((await session.scalars(select(SubscriptionReminder))).all()) == 1
+
+        await SubscriptionRepository(session).activate_manual(
+            user, datetime(2026, 8, 1, tzinfo=UTC), 10
+        )
+        assert len((await session.scalars(select(SubscriptionReminder))).all()) == 0
+
+
+async def test_failed_reminder_does_not_stop_other_users(session_factory: Any) -> None:
+    async with session_factory() as session, session.begin():
+        await make_subscription(session, 3, telegram_id=1003)
+        await make_subscription(session, 3, telegram_id=2003)
+        bot = FirstMessageFailsBot()
+        await SubscriptionLifecycleService(session, bot).send_due_reminders(
+            datetime(2026, 7, 14, 9, tzinfo=UTC)
+        )
+        assert bot.calls == 2
+        assert len(bot.messages) == 1
+        assert len((await session.scalars(select(SubscriptionReminder))).all()) == 1
+
+
 async def test_subscription_expiration(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
         _, sub = await make_subscription(session, -1)
@@ -105,7 +147,7 @@ async def test_manual_import_and_migration_user(session_factory: Any) -> None:
 
 async def test_manual_extend_and_cancel(session_factory: Any) -> None:
     async with session_factory() as session, session.begin():
-        user, sub = await make_subscription(session, 5)
+        user, sub = await make_subscription(session, 5, datetime.now(UTC))
         old_expires = sub.expires_at
         updated = await ManualSubscriptionService(session).extend_manual(user.telegram_id, 10, 10)
         assert old_expires is not None
@@ -127,3 +169,19 @@ async def test_user_history_and_settings(session_factory: Any) -> None:
         await repo.set("subscription_duration_days", "45", 10)
         effective = await repo.effective(Settings(subscription_duration_days=30))
         assert effective["subscription_duration_days"] == 45
+
+
+async def test_runtime_settings_are_validated_and_resolved(session_factory: Any) -> None:
+    async with session_factory() as session, session.begin():
+        repo = SettingsRepository(session)
+        await repo.set("subscription_price", "1490", 10)
+        await repo.set("subscription_duration_days", "45", 10)
+        resolved = await repo.resolved(
+            Settings(subscription_price="990", subscription_duration_days=30)
+        )
+        assert str(resolved.subscription_price) == "1490.00"
+        assert resolved.subscription_duration_days == 45
+        with pytest.raises(ValueError):
+            await repo.set("subscription_price", "not-a-price", 10)
+        with pytest.raises(ValueError):
+            await repo.set("subscription_duration_days", "-5", 10)

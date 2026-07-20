@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: teleport_test
+          POSTGRES_USER: teleport
+          POSTGRES_PASSWORD: teleport
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U teleport -d teleport_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://teleport:teleport@localhost:5432/teleport_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev]'
+      - run: python -m ruff check .
+      - run: python -m mypy src tests
+      - run: python -m pytest -q
+      - run: alembic upgrade head
+      - run: alembic downgrade -1
+      - run: alembic upgrade head

@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 
 from teleport_bot.models.db import Questionnaire, User
 from teleport_bot.models.enums import FunnelStatus, OnboardingStatus, QuestionnaireStatus
+from teleport_bot.services.formatting import escape_html
 
 
 @dataclass(frozen=True)
@@ -120,13 +121,21 @@ def set_answer(questionnaire: Questionnaire, step: int, answer: str) -> None:
 def render_summary(questionnaire: Questionnaire) -> str:
     parts = ["Проверь анкету:"]
     for question in QUESTIONS:
-        parts.append(f"\n{question.text}\nОтвет: {getattr(questionnaire, question.field) or '—'}")
+        answer = getattr(questionnaire, question.field) or "—"
+        parts.append(f"\n{question.text}\nОтвет: {escape_html(answer)}")
     return "\n".join(parts)
 
 
 def complete(user: User, questionnaire: Questionnaire) -> bool:
     if questionnaire.status == QuestionnaireStatus.COMPLETED.value:
         return False
+    missing = [
+        question.number for question in QUESTIONS if not getattr(questionnaire, question.field)
+    ]
+    if missing:
+        raise ValidationError(
+            "Анкета заполнена не полностью. Вернись к вопросу " + str(missing[0]) + "."
+        )
     questionnaire.status = QuestionnaireStatus.COMPLETED.value
     questionnaire.current_step = len(QUESTIONS)
     questionnaire.completed_at = datetime.now(UTC)
