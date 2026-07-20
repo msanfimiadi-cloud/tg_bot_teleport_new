@@ -4,14 +4,15 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, cast
 
+import pytest
 from aiohttp import web
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from teleport_bot.config.settings import Settings
 from teleport_bot.db.base import Base
-from teleport_bot.models.db import Payment
-from teleport_bot.models.enums import QuestionnaireStatus
+from teleport_bot.models.db import EventLog, Payment
+from teleport_bot.models.enums import EventType, QuestionnaireStatus
 from teleport_bot.repositories.users import UserRepository
 from teleport_bot.services.yookassa import ProviderPayment
 from teleport_bot.web import health
@@ -27,9 +28,15 @@ class TgUser:
 
 
 class FakeRequest:
-    def __init__(self, payload: dict[str, Any], app: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        payload: dict[str, Any],
+        app: dict[str, Any] | None = None,
+        match_info: dict[str, str] | None = None,
+    ) -> None:
         self._payload = payload
         self.app = app or {}
+        self.match_info = match_info or {}
 
     async def json(self) -> dict[str, Any]:
         return self._payload
@@ -85,6 +92,69 @@ async def test_health_checks_database() -> None:
 async def test_health_without_database_is_unhealthy() -> None:
     response = await health.health(cast(web.Request, FakeRequest({})))
     assert response.status == 503
+
+
+async def test_payment_open_tracks_first_click_and_redirects(monkeypatch: Any) -> None:
+    class FakeBot:
+        def __init__(self) -> None:
+            self.messages: list[tuple[int, str]] = []
+
+        async def send_message(self, chat_id: int, text: str) -> None:
+            self.messages.append((chat_id, text))
+
+    engine, session_factory = await _session_factory()
+    try:
+        async with session_factory() as session, session.begin():
+            user, _ = await UserRepository(session).upsert_from_telegram(
+                TgUser(1101, "clicker", "Clicker")
+            )
+            session.add(
+                Payment(
+                    user_id=user.id,
+                    provider="yookassa",
+                    provider_payment_id="pay_clicked",
+                    idempotency_key="idem-clicked",
+                    status="pending",
+                    amount=Decimal("990.00"),
+                    currency="RUB",
+                    confirmation_url="https://pay.example/clicked",
+                    payment_metadata={},
+                )
+            )
+        bot = FakeBot()
+        request = FakeRequest(
+            {},
+            {
+                "settings": Settings(admin_ids="999"),
+                "session_factory": session_factory,
+                "bot": bot,
+            },
+            {"idempotency_key": "idem-clicked"},
+        )
+
+        for _ in range(2):
+            with pytest.raises(web.HTTPFound) as redirect:
+                await health.payment_open(cast(web.Request, request))
+            assert redirect.value.location == "https://pay.example/clicked"
+
+        async with session_factory() as session:
+            payment = await session.scalar(select(Payment))
+            events = list(
+                (
+                    await session.scalars(
+                        select(EventLog).where(
+                            EventLog.event_type == EventType.PAYMENT_LINK_OPENED.value
+                        )
+                    )
+                ).all()
+            )
+            assert payment is not None
+            assert payment.confirmation_opened_at is not None
+            assert len(events) == 1
+        assert len(bot.messages) == 1
+        assert "перешёл по ссылке оплаты" in bot.messages[0][1]
+    finally:
+        await engine.dispose()
 
 
 async def test_yookassa_webhook_payment_succeeded_flow_passes_step_1(

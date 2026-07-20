@@ -29,7 +29,7 @@ from teleport_bot.bot.keyboards.onboarding import payment_reminder_keyboard
 from teleport_bot.bot.states import AdminStates
 from teleport_bot.config.settings import Settings
 from teleport_bot.models.db import Partner, Questionnaire, Subscription, User
-from teleport_bot.models.enums import AdminAction, PartnerStatus
+from teleport_bot.models.enums import AdminAction, EventType, PartnerStatus
 from teleport_bot.repositories.admin import AdminLogRepository, AdminRepository
 from teleport_bot.repositories.settings import SettingsRepository
 from teleport_bot.repositories.subscriptions import SubscriptionRepository
@@ -40,6 +40,7 @@ from teleport_bot.services.admin_chat_publisher import (
     MessageValidationError,
 )
 from teleport_bot.services.formatting import escape_html
+from teleport_bot.services.payments import mask_email
 from teleport_bot.services.questionnaire import QUESTIONS
 from teleport_bot.services.referrals import ReferralService, partner_link
 from teleport_bot.services.telegram import TelegramService
@@ -918,12 +919,46 @@ async def history_show(
     payments = history["payments"]
     events = history["events"]
     admin_logs = history["admin_logs"]
+    event_types = {event.event_type for event in events}
+    sent_payments = [payment for payment in payments if payment.confirmation_sent_at]
+    opened_payments = [payment for payment in payments if payment.confirmation_opened_at]
+    paid_payments = [payment for payment in payments if payment.status == "succeeded"]
+    latest_payment = payments[-1] if payments else None
+    access_sent = EventType.INVITE_LINK_CREATED.value in event_types
+    already_member = EventType.ACCESS_ALREADY_PRESENT.value in event_types
+    access_failed = EventType.ACCESS_DELIVERY_FAILED.value in event_types
+    email_requested = user.payment_email_requested_at is not None
+    email_saved = user.email is not None
+    questionnaire_saved_at = (
+        f": {questionnaire.completed_at:%d.%m.%Y %H:%M}"
+        if questionnaire.completed_at
+        else ""
+    )
+    latest_payment_text = (
+        f"{latest_payment.status}, {latest_payment.amount} {latest_payment.currency}"
+        if latest_payment
+        else "—"
+    )
     text = (
         f"История пользователя {target_id}\n"
+        "\nВоронка:\n"
+        f"{'✅' if questionnaire.completed_at else '❌'} Анкета сохранена"
+        f"{questionnaire_saved_at}\n"
+        f"{'✅' if email_requested else '❌'} Бот запросил email\n"
+        f"{'✅' if email_saved else '❌'} Email сохранён"
+        f"{f': {mask_email(user.email)}' if user.email else ''}\n"
+        f"{'✅' if sent_payments else '❌'} Ссылка на оплату отправлена\n"
+        f"{'✅' if opened_payments else '❌'} Пользователь перешёл к оплате\n"
+        f"{'✅' if paid_payments else '❌'} Оплата подтверждена\n"
+        f"{'✅' if access_sent else '❌'} Ссылка в Telegram-чат отправлена\n"
+        f"{'✅' if already_member else '❌'} Пользователь уже был в Telegram-чате\n"
+        f"{'⚠️' if access_failed else '✅'} Ошибка выдачи доступа"
+        f"{': была' if access_failed else ': не зафиксирована'}\n\n"
         f"Анкета: {getattr(questionnaire, 'status', '—')}\n"
         f"Подписка: {getattr(subscription, 'status', '—')} до "
         f"{getattr(subscription, 'expires_at', '—')}\n"
         f"Платежи: {len(payments)}\n"
+        f"Последний платёж: {latest_payment_text}\n"
         f"События: {len(events)}\n"
         f"Административные действия: {len(admin_logs)}\n"
         f"Telegram username: @{escape_html(user.username or '—')}"

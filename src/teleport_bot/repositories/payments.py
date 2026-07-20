@@ -58,6 +58,16 @@ class PaymentRepository:
             ),
         )
 
+    async def get_by_idempotency_key_for_update(self, idempotency_key: str) -> Payment | None:
+        return cast(
+            Payment | None,
+            await self.session.scalar(
+                select(Payment)
+                .where(Payment.idempotency_key == idempotency_key)
+                .with_for_update()
+            ),
+        )
+
     async def add(self, payment: Payment) -> Payment:
         self.session.add(payment)
         await self.session.flush()

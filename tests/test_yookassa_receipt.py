@@ -17,6 +17,7 @@ from teleport_bot.services.payments import (
     PaymentService,
     PaymentValidationError,
     normalize_email,
+    payment_checkout_url,
 )
 from teleport_bot.services.yookassa import ProviderPayment, YooKassaGateway, _safe_json
 
@@ -95,6 +96,23 @@ def test_yookassa_payload_contains_valid_receipt_and_settings() -> None:
     assert item["vat_code"] == 2
     assert item["payment_mode"] == "partial_payment"
     assert item["payment_subject"] == "commodity"
+
+
+def test_payment_checkout_url_uses_public_tracking_redirect() -> None:
+    payment = Payment(idempotency_key="safe token", confirmation_url="https://pay.example/1")
+
+    url, tracked = payment_checkout_url(
+        payment, Settings(public_base_url="https://bot.example.com/")
+    )
+
+    assert url == "https://bot.example.com/payments/open/safe%20token"
+    assert tracked is True
+
+
+def test_payment_checkout_url_falls_back_to_provider_without_public_url() -> None:
+    payment = Payment(idempotency_key="token", confirmation_url="https://pay.example/1")
+
+    assert payment_checkout_url(payment, Settings()) == ("https://pay.example/1", False)
 
 
 def test_yookassa_payload_rejects_missing_email_or_phone() -> None:
@@ -210,6 +228,44 @@ async def test_successful_renewal_extends_active_subscription_from_current_expir
         assert user.subscription is not None
         assert user.subscription.status == "active"
         assert user.subscription.expires_at == current_expiry + timedelta(days=30)
+
+
+async def test_payment_success_admin_notification_is_sent_only_once(session_factory: Any) -> None:
+    class FakeBot:
+        def __init__(self) -> None:
+            self.messages: list[tuple[int, str]] = []
+
+        async def send_message(self, chat_id: int, text: str) -> None:
+            self.messages.append((chat_id, text))
+
+    async with session_factory() as session, session.begin():
+        user, _ = await UserRepository(session).upsert_from_telegram(TgUser(14, "paid", "A"))
+        user.questionnaire.status = QuestionnaireStatus.COMPLETED.value
+        await SubscriptionRepository(session).activate_manual(
+            user, datetime.now(UTC) + timedelta(days=30)
+        )
+        payment = Payment(
+            user_id=user.id,
+            provider="yookassa",
+            provider_payment_id="pay_notify_once",
+            idempotency_key="idem_notify_once",
+            status="succeeded",
+            amount=Decimal("990.00"),
+            currency="RUB",
+            payment_metadata={},
+        )
+        session.add(payment)
+        await session.flush()
+        bot = FakeBot()
+        service = PaymentService(session, Settings(admin_ids="999"), FakeGateway())
+
+        await service.notify_payment_succeeded(bot, user, payment)  # type: ignore[arg-type]
+        await service.notify_payment_succeeded(bot, user, payment)  # type: ignore[arg-type]
+
+        assert len(bot.messages) == 1
+        assert bot.messages[0][0] == 999
+        assert "Оплата подтверждена" in bot.messages[0][1]
+        assert payment.success_notified_at is not None
 
 
 def test_email_is_masked_in_safe_log_payload() -> None:

@@ -1,6 +1,7 @@
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from urllib.parse import quote, urlparse
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -62,6 +63,16 @@ def normalize_email(email: str) -> str:
 def mask_email(email: str) -> str:
     local, _, domain = email.partition("@")
     return f"{local[:1]}***@{domain}" if domain else "<invalid_email>"
+
+
+def payment_checkout_url(payment: Payment, settings: Settings) -> tuple[str, bool]:
+    base_url = settings.public_base_url or settings.webhook_host
+    if base_url:
+        parsed = urlparse(base_url)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            token = quote(payment.idempotency_key, safe="")
+            return f"{base_url.rstrip('/')}/payments/open/{token}", True
+    return payment.confirmation_url or settings.yookassa_return_url, False
 
 
 class PaymentService:
@@ -313,6 +324,15 @@ class PaymentService:
     def _is_expired(self, payment: Payment) -> bool:
         return bool(payment.expires_at and payment.expires_at <= datetime.now(UTC))
 
+    async def notify_payment_succeeded(self, bot: Bot, user: User, payment: Payment) -> None:
+        if payment.success_notified_at is not None:
+            return
+        await AdminNotifier(
+            bot, self.settings.admin_telegram_ids, self.events
+        ).payment_succeeded(user, payment)
+        payment.success_notified_at = datetime.now(UTC)
+        await self.session.flush()
+
     async def deliver_access_after_commit(self, bot: Bot, user: User) -> bool:
         try:
             if self.settings.private_chat_id is None:
@@ -344,6 +364,9 @@ class PaymentService:
                 ),
                 user,
             )
+            await AdminNotifier(
+                bot, self.settings.admin_telegram_ids, self.events
+            ).access_delivered(user, already_member=result.already_member)
             logger.info(
                 "access delivery completed",
                 user_id=user.id,

@@ -38,6 +38,10 @@ class User(TimestampMixin, Base):
     last_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     language_code: Mapped[str | None] = mapped_column(String(16), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    payment_email_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    email_saved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     onboarding_status: Mapped[str] = mapped_column(String(64), default=OnboardingStatus.NEW.value)
     funnel_status: Mapped[str] = mapped_column(String(64), default=FunnelStatus.ONBOARDING.value)
     first_started_at: Mapped[datetime] = mapped_column(
@@ -135,6 +139,15 @@ class Payment(TimestampMixin, Base):
         "metadata", JSON().with_variant(JSONB, "postgresql"), default=dict
     )
     applied_to_subscription_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirmation_sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    confirmation_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    success_notified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

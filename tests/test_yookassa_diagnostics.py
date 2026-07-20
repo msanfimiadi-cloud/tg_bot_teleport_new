@@ -58,6 +58,7 @@ class FakeUser:
     onboarding_status = ""
     subscription = None
     questionnaire = type("Questionnaire", (), {"status": QuestionnaireStatus.COMPLETED.value})()
+    payment_email_requested_at = None
 
 
 class FakeUserRepository:
@@ -98,6 +99,15 @@ class FakeAdminNotifier:
         self.events = events
 
     async def payment_stage_reached(self, user: Any) -> None:
+        return None
+
+    async def payment_email_requested(self, user: Any) -> None:
+        return None
+
+    async def payment_email_saved(self, user: Any) -> None:
+        return None
+
+    async def payment_link_sent(self, user: Any, payment: Any, *, tracked: bool) -> None:
         return None
 
     async def payment_creation_failed(

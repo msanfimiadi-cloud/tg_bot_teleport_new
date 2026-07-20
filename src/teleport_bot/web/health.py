@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from aiogram import Bot
 from aiohttp import web
 from sqlalchemy import text
@@ -5,9 +7,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from structlog.stdlib import get_logger
 
 from teleport_bot.config.settings import Settings
-from teleport_bot.models.db import User
+from teleport_bot.models.enums import EventType
+from teleport_bot.repositories.events import EventRepository
 from teleport_bot.repositories.payments import PaymentRepository
 from teleport_bot.repositories.settings import SettingsRepository
+from teleport_bot.repositories.users import UserRepository
+from teleport_bot.services.admin_notifications import AdminNotifier
 from teleport_bot.services.payments import PaymentService, PaymentValidationError
 from teleport_bot.services.yookassa import YooKassaGateway
 
@@ -30,6 +35,39 @@ async def health(request: web.Request) -> web.Response:
         logger.warning("health_check_failed", dependency="database", error=type(exc).__name__)
         return web.json_response({"status": "unhealthy", "database": "unavailable"}, status=503)
     return web.json_response({"status": "ok", "database": "ok"})
+
+
+async def payment_open(request: web.Request) -> web.Response:
+    idempotency_key = str(request.match_info.get("idempotency_key") or "")
+    if not idempotency_key or len(idempotency_key) > 128:
+        raise web.HTTPNotFound()
+    settings: Settings = request.app["settings"]
+    factory: async_sessionmaker[AsyncSession] = request.app["session_factory"]
+    redirect_url: str | None = None
+    async with factory() as session:
+        async with session.begin():
+            payment = await PaymentRepository(session).get_by_idempotency_key_for_update(
+                idempotency_key
+            )
+            if payment is None or not payment.confirmation_url:
+                raise web.HTTPNotFound()
+            redirect_url = payment.confirmation_url
+            if payment.confirmation_opened_at is None:
+                payment.confirmation_opened_at = datetime.now(UTC)
+                user = await UserRepository(session).get_by_id(payment.user_id)
+                if user is not None:
+                    events = EventRepository(session)
+                    await events.add(
+                        EventType.PAYMENT_LINK_OPENED,
+                        user,
+                        {"payment_id": payment.id},
+                    )
+                    bot: Bot | None = request.app.get("bot")
+                    if bot is not None:
+                        await AdminNotifier(
+                            bot, settings.admin_telegram_ids, events
+                        ).payment_link_opened(user, payment)
+    raise web.HTTPFound(location=redirect_url)
 
 
 async def yookassa_webhook(request: web.Request) -> web.Response:
@@ -110,7 +148,7 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
                 applied_to_subscription=payment.applied_to_subscription_at is not None,
                 was_already_applied=was_applied,
             )
-            if payment.applied_to_subscription_at is not None:
+            if not was_applied and payment.applied_to_subscription_at is not None:
                 deliver_user_id = payment.user_id
                 logger.info(
                     "STEP 3 subscription activated",
@@ -131,7 +169,7 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
         logger.info("webhook access delivery skipped", reason="no_user_to_deliver")
     else:
         async with factory() as session:
-            user = await session.get(User, deliver_user_id)
+            user = await UserRepository(session).get_by_id(deliver_user_id)
             if user is None:
                 logger.warning(
                     "webhook access delivery skipped",
@@ -141,6 +179,11 @@ async def yookassa_webhook(request: web.Request) -> web.Response:
             else:
                 runtime_settings = await SettingsRepository(session).resolved(settings)
                 service = PaymentService(session, runtime_settings, gateway)
+                payment = await PaymentRepository(session).get_by_provider_id(
+                    "yookassa", provider_payment_id
+                )
+                if payment is not None:
+                    await service.notify_payment_succeeded(bot, user, payment)
                 await service.deliver_access_after_commit(bot, user)
                 await session.commit()
     return web.json_response({"status": "ok"})
@@ -160,6 +203,7 @@ def create_health_app(
         app["bot"] = bot
     app["ready"] = False
     app.router.add_get("/health", health)
+    app.router.add_get("/payments/open/{idempotency_key}", payment_open)
     path = (
         settings.yookassa_webhook_path if settings is not None else "/webhooks/yookassa"
     )

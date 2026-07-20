@@ -1,7 +1,7 @@
 from aiogram import Bot
 from structlog.stdlib import get_logger
 
-from teleport_bot.models.db import Questionnaire, User
+from teleport_bot.models.db import Payment, Questionnaire, User
 from teleport_bot.models.enums import EventType
 from teleport_bot.repositories.events import EventRepository
 from teleport_bot.services.formatting import escape_html
@@ -42,7 +42,7 @@ class AdminNotifier:
         else:
             partner_text = escape_html(attr.partner.display_name) if attr else "не указан"
         text = (
-            "Анкета подтверждена\n"
+            "✅ Анкета сохранена\n"
             f"Telegram ID: {user.telegram_id}\nUsername: @{escape_html(user.username)}\n"
             f"Имя: {escape_html(user.first_name)}\n"
             f"1: {escape_html(questionnaire.name_and_age)}\n"
@@ -57,6 +57,61 @@ class AdminNotifier:
 
     async def payment_stage_reached(self, user: User) -> None:
         await self._send(f"Пользователь дошёл до оплаты: {user.telegram_id}", user)
+
+    async def payment_email_requested(self, user: User) -> None:
+        await self._send(
+            "Бот запросил email для оплаты\n"
+            f"Telegram ID: {user.telegram_id}\n"
+            f"Username: @{escape_html(user.username or '-')}",
+            user,
+        )
+
+    async def payment_email_saved(self, user: User) -> None:
+        await self._send(
+            "Email для оплаты сохранён\n"
+            f"Telegram ID: {user.telegram_id}\n"
+            f"Username: @{escape_html(user.username or '-')}",
+            user,
+        )
+
+    async def payment_link_sent(self, user: User, payment: Payment, *, tracked: bool) -> None:
+        await self._send(
+            "Ссылка на оплату отправлена\n"
+            f"Telegram ID: {user.telegram_id}\n"
+            f"Сумма: {payment.amount} {payment.currency}\n"
+            f"Отслеживание перехода: {'включено' if tracked else 'недоступно'}",
+            user,
+        )
+
+    async def payment_link_opened(self, user: User, payment: Payment) -> None:
+        await self._send(
+            "Пользователь перешёл по ссылке оплаты\n"
+            f"Telegram ID: {user.telegram_id}\n"
+            f"Сумма: {payment.amount} {payment.currency}",
+            user,
+        )
+
+    async def payment_succeeded(self, user: User, payment: Payment) -> None:
+        expires_at = user.subscription.expires_at if user.subscription else None
+        text = (
+            "✅ Оплата подтверждена\n"
+            f"Telegram ID: {user.telegram_id}\n"
+            f"Сумма: {payment.amount} {payment.currency}"
+        )
+        if expires_at:
+            text += f"\nПодписка действует до: {expires_at:%d.%m.%Y}"
+        await self._send(text, user)
+
+    async def access_delivered(self, user: User, *, already_member: bool) -> None:
+        await self._send(
+            (
+                "Пользователь уже состоит в Telegram-чате\n"
+                if already_member
+                else "Ссылка в Telegram-чат отправлена\n"
+            )
+            + f"Telegram ID: {user.telegram_id}",
+            user,
+        )
 
     async def payment_creation_failed(
         self,

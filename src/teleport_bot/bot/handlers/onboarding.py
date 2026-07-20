@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.filters import CommandStart
@@ -22,7 +24,7 @@ from teleport_bot.bot.keyboards.onboarding import (
 )
 from teleport_bot.bot.states import OnboardingStates
 from teleport_bot.config.settings import Settings
-from teleport_bot.models.db import User
+from teleport_bot.models.db import Payment, User
 from teleport_bot.models.enums import EventType, FunnelStatus, OnboardingStatus, QuestionnaireStatus
 from teleport_bot.repositories.events import EventRepository
 from teleport_bot.repositories.settings import SettingsRepository
@@ -35,6 +37,7 @@ from teleport_bot.services.payments import (
     PaymentError,
     PaymentService,
     normalize_email,
+    payment_checkout_url,
 )
 from teleport_bot.services.public_welcome import publish_questionnaire_and_send_welcome
 from teleport_bot.services.questionnaire import (
@@ -91,6 +94,29 @@ async def open_bot_keyboard(bot: Bot, payload: str) -> InlineKeyboardMarkup:
 
 def callback_message(callback: CallbackQuery) -> Message | None:
     return callback.message if isinstance(callback.message, Message) else None
+
+
+async def send_payment_offer(
+    message: Message,
+    user: User,
+    payment: Payment,
+    runtime_settings: Settings,
+    bot: Bot,
+    events: EventRepository,
+) -> None:
+    checkout_url, tracked = payment_checkout_url(payment, runtime_settings)
+    await message.answer(
+        "Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
+        f"Стоимость: {payment.amount} {payment.currency}\n"
+        f"Срок: {runtime_settings.subscription_duration_days} дней\n"
+        f"{runtime_settings.subscription_description}",
+        reply_markup=payment_keyboard(checkout_url),
+    )
+    payment.confirmation_sent_at = payment.confirmation_sent_at or datetime.now(UTC)
+    await events.add(EventType.PAYMENT_LINK_SENT, user, {"payment_id": payment.id})
+    await AdminNotifier(
+        bot, runtime_settings.admin_telegram_ids, events
+    ).payment_link_sent(user, payment, tracked=tracked)
 
 
 async def get_current_user(session: AsyncSession, message: Message) -> tuple[User, bool]:
@@ -381,11 +407,15 @@ async def payment_start(
     user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
     if user and (message := callback_message(callback)):
         runtime_settings = await SettingsRepository(session).resolved(settings)
+        first_payment_stage = user.funnel_status != FunnelStatus.PAYMENT_STAGE_REACHED.value
         user.funnel_status = FunnelStatus.PAYMENT_STAGE_REACHED.value
         user.onboarding_status = OnboardingStatus.PAYMENT_STAGE.value
         events = EventRepository(session)
-        await events.add(EventType.PAYMENT_STAGE_REACHED, user)
-        await AdminNotifier(bot, settings.admin_telegram_ids, events).payment_stage_reached(user)
+        if first_payment_stage:
+            await events.add(EventType.PAYMENT_STAGE_REACHED, user)
+            await AdminNotifier(
+                bot, settings.admin_telegram_ids, events
+            ).payment_stage_reached(user)
         subscription = user.subscription
         if (
             callback.data == "payment:start"
@@ -407,6 +437,12 @@ async def payment_start(
                 return
             if not user.email:
                 await state.set_state(OnboardingStates.payment_email)
+                if user.payment_email_requested_at is None:
+                    user.payment_email_requested_at = datetime.now(UTC)
+                    await events.add(EventType.PAYMENT_EMAIL_REQUESTED, user)
+                    await AdminNotifier(
+                        bot, settings.admin_telegram_ids, events
+                    ).payment_email_requested(user)
                 await message.answer(
                     "Для фискального чека нужен email.\n\n"
                     "Отправь адрес следующим сообщением в этот чат, например: "
@@ -436,14 +472,8 @@ async def payment_start(
             except PaymentError as exc:
                 await message.answer(f"Не удалось создать оплату: {exc}")
             else:
-                await message.answer(
-                    "Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
-                    f"Стоимость: {payment.amount} {payment.currency}\n"
-                    f"Срок: {runtime_settings.subscription_duration_days} дней\n"
-                    f"{runtime_settings.subscription_description}",
-                    reply_markup=payment_keyboard(
-                        payment.confirmation_url or runtime_settings.yookassa_return_url
-                    ),
+                await send_payment_offer(
+                    message, user, payment, runtime_settings, bot, events
                 )
     await callback.answer()
 
@@ -453,6 +483,7 @@ async def payment_email(
     message: Message, session: AsyncSession, state: FSMContext, bot: Bot, settings: Settings
 ) -> None:
     user, _ = await get_current_user(session, message)
+    events = EventRepository(session)
     try:
         email = normalize_email(message.text or "")
     except PaymentError:
@@ -461,9 +492,13 @@ async def payment_email(
             "обычным сообщением, например: name@example.com.",
         )
         return
+    if user.payment_email_requested_at is None:
+        user.payment_email_requested_at = datetime.now(UTC)
+        await events.add(EventType.PAYMENT_EMAIL_REQUESTED, user)
     await UserRepository(session).set_email(user, email)
     await state.clear()
-    events = EventRepository(session)
+    await events.add(EventType.PAYMENT_EMAIL_SAVED, user)
+    await AdminNotifier(bot, settings.admin_telegram_ids, events).payment_email_saved(user)
     runtime_settings = await SettingsRepository(session).resolved(settings)
     try:
         payment = await PaymentService(
@@ -480,15 +515,7 @@ async def payment_email(
     except PaymentError as exc:
         await message.answer(f"Email сохранён, но не удалось создать оплату: {exc}")
     else:
-        await message.answer(
-            "Email сохранён. Для доступа в закрытое пространство необходимо оплатить подписку.\n\n"
-            f"Стоимость: {payment.amount} {payment.currency}\n"
-            f"Срок: {runtime_settings.subscription_duration_days} дней\n"
-            f"{runtime_settings.subscription_description}",
-            reply_markup=payment_keyboard(
-                payment.confirmation_url or runtime_settings.yookassa_return_url
-            ),
-        )
+        await send_payment_offer(message, user, payment, runtime_settings, bot, events)
 
 
 @router.message(F.text, F.chat.type == ChatType.PRIVATE)
@@ -531,6 +558,8 @@ async def payment_check(
                 await message.answer("Актуальный платёж не найден. Создай новую оплату.")
             elif payment.status == "succeeded":
                 user = await UserRepository(session).get_by_telegram_id(callback.from_user.id)
+                if user is not None:
+                    await service.notify_payment_succeeded(bot, user, payment)
                 delivered = (
                     await service.deliver_access_after_commit(bot, user)
                     if user is not None

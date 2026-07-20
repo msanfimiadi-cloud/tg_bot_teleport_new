@@ -53,10 +53,18 @@ class UserRepository:
         )
 
     async def get_by_id(self, user_id: int) -> User | None:
-        return cast(User | None, await self.session.get(User, user_id))
+        return cast(
+            User | None,
+            await self.session.scalar(
+                select(User)
+                .options(selectinload(User.questionnaire), selectinload(User.subscription))
+                .where(User.id == user_id)
+            ),
+        )
 
     async def set_email(self, user: User, email: str) -> None:
         user.email = email
+        user.email_saved_at = datetime.now(UTC)
         await self.session.flush()
 
     async def all_telegram_ids(self) -> list[int]:
