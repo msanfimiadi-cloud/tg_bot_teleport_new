@@ -89,6 +89,20 @@ class AdminRepository:
         )
         return list((await self.session.scalars(stmt)).all())
 
+    async def users_count(self, query: str | None = None) -> int:
+        stmt = select(func.count(User.id))
+        if query:
+            like = f"%{query.lower()}%"
+            conditions: list[ColumnElement[bool]] = [
+                func.lower(User.username).like(like),
+                func.lower(User.first_name).like(like),
+                func.lower(User.last_name).like(like),
+            ]
+            if query.isdigit():
+                conditions.append(User.telegram_id == int(query))
+            stmt = stmt.where(or_(*conditions))
+        return int(await self.session.scalar(stmt) or 0)
+
     async def stats(self) -> dict[str, int]:
         now = datetime.now(UTC)
         today_start = datetime.combine(date.today(), time.min, tzinfo=UTC)

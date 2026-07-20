@@ -31,6 +31,27 @@ def back_to_admin_menu() -> InlineKeyboardMarkup:
     )
 
 
+def users_pagination(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    navigation: list[InlineKeyboardButton] = []
+    if page > 1:
+        navigation.append(
+            InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin:users:{page - 1}")
+        )
+    navigation.append(
+        InlineKeyboardButton(text=f"{page} / {total_pages}", callback_data=f"admin:users:{page}")
+    )
+    if page < total_pages:
+        navigation.append(
+            InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"admin:users:{page + 1}")
+        )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            navigation,
+            [InlineKeyboardButton(text="⬅️ В меню", callback_data="admin:menu")],
+        ]
+    )
+
+
 def payment_reminder_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[

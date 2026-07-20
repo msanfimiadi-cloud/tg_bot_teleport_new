@@ -24,6 +24,7 @@ from teleport_bot.bot.keyboards.admin import (
     partners_menu,
     payment_reminder_confirm,
     payment_reminder_menu,
+    users_pagination,
 )
 from teleport_bot.bot.keyboards.onboarding import payment_reminder_keyboard
 from teleport_bot.bot.states import AdminStates
@@ -391,10 +392,21 @@ def render_user(user: User) -> str:
 async def users(callback: CallbackQuery, session: AsyncSession, settings: Settings) -> None:
     if not await guard_callback(callback, session, settings):
         return
-    page = int(callback.data.rsplit(":", 1)[-1]) if callback.data else 1
-    rows = await AdminRepository(session).users(page=page)
-    text = "\n\n".join(render_user(u) for u in rows) or "Пользователи не найдены."
-    await callback.message.answer(text, reply_markup=back_to_admin_menu())  # type: ignore[union-attr]
+    try:
+        requested_page = int(callback.data.rsplit(":", 1)[-1]) if callback.data else 1
+    except ValueError:
+        await callback.answer()
+        return
+    per_page = 5
+    repo = AdminRepository(session)
+    total_users = await repo.users_count()
+    total_pages = max(1, (total_users + per_page - 1) // per_page)
+    page = min(max(requested_page, 1), total_pages)
+    rows = await repo.users(page=page, per_page=per_page)
+    header = f"Пользователи: {total_users}\nСтраница {page} из {total_pages}\n\n"
+    text = header + ("\n\n".join(render_user(u) for u in rows) or "Пользователи не найдены.")
+    if message := admin_callback_message(callback):
+        await message.edit_text(text, reply_markup=users_pagination(page, total_pages))
     await callback.answer()
 
 

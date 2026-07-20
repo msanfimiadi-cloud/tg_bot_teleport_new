@@ -15,7 +15,11 @@ from teleport_bot.bot.handlers.admin import (
     render_chatid_response,
     send_payment_reminders,
 )
-from teleport_bot.bot.keyboards.admin import admin_menu, payment_reminder_confirm
+from teleport_bot.bot.keyboards.admin import (
+    admin_menu,
+    payment_reminder_confirm,
+    users_pagination,
+)
 from teleport_bot.config.settings import Settings
 from teleport_bot.db.base import Base
 from teleport_bot.models.db import AdminActionLog, Subscription
@@ -137,6 +141,22 @@ async def test_user_search(session_factory: Any) -> None:
         assert [u.telegram_id for u in by_username] == [100]
         assert [u.telegram_id for u in by_id] == [200]
         assert [u.telegram_id for u in by_name] == [100]
+        assert await AdminRepository(session).users_count() == 2
+        assert await AdminRepository(session).users_count(query="needle") == 1
+
+
+def test_users_pagination_buttons() -> None:
+    first = users_pagination(1, 3).inline_keyboard[0]
+    middle = users_pagination(2, 3).inline_keyboard[0]
+    last = users_pagination(3, 3).inline_keyboard[0]
+
+    assert [button.callback_data for button in first] == ["admin:users:1", "admin:users:2"]
+    assert [button.callback_data for button in middle] == [
+        "admin:users:1",
+        "admin:users:2",
+        "admin:users:3",
+    ]
+    assert [button.callback_data for button in last] == ["admin:users:2", "admin:users:3"]
 
 
 async def test_all_user_telegram_ids(session_factory: Any) -> None:
